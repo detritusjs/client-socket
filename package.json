@@ -24,5 +24,7 @@
   "bugs": {
     "url": "https://github.com/detritusjs/websocket/issues"
   },
-  "homepage": "https://github.com/detritusjs/websocket#readme"
+  "homepage": "https://github.com/detritusjs/websocket#readme",
+  "dependencies": {},
+  "devDependencies": {}
 }
