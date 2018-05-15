@@ -1,6 +1,6 @@
 {
   "name": "detritus-websocket",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "a nodejs library to interact with discord's websocket gateway",
   "main": "./lib/index.js",
   "directories": {
@@ -25,6 +25,13 @@
     "url": "https://github.com/detritusjs/websocket/issues"
   },
   "homepage": "https://github.com/detritusjs/websocket#readme",
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "ws": ">=4.0.0"
+  },
+  "devDependencies": {},
+  "peerDependencies": {
+	"erlpack": "discordapp/erlpack",
+	"pako": ">=1.0.0",
+    "uws": ">=9.147.0"
+  }
 }
