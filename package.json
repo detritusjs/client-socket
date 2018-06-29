@@ -1,6 +1,6 @@
 {
   "name": "detritus-websocket",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "a nodejs library to interact with discord's websocket gateway",
   "main": "./lib/index.js",
   "directories": {
