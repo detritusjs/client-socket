@@ -1,0 +1,9 @@
+export const RTPHeader = Object.freeze({
+  VERSION: 0x80,
+  PayloadTypes: Object.freeze({
+    OPUS: 0x78,
+    VP8: 0x65,
+    VP9: 0x67,
+    H264: 0x69
+  }),
+});

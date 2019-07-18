@@ -1,0 +1,316 @@
+export const Package = Object.freeze({
+  URL: 'https://github.com/detritusjs/client-socket',
+  VERSION: '0.2.0',
+});
+
+function normalize(object: {
+  [key: string]: any,
+}) {
+  for (let key in object) {
+    object[key] = key;
+  }
+  return Object.freeze(object);
+}
+
+
+export const ApiVersions = Object.freeze({
+  GATEWAY: 6,
+  MEDIA_GATEWAY: 4,
+});
+
+export const CompressTypes = Object.freeze({
+  NONE: 'none',
+  PAYLOAD: 'payload',
+  ZLIB: 'zlib-stream',
+  ZSTD: 'zstd-stream',
+});
+
+export const DEFAULT_SHARD_COUNT = 0;
+
+export const EncodingTypes = Object.freeze({
+  ETF: 'etf',
+  JSON: 'json',
+});
+
+export const GatewayActivityFlags = Object.freeze({
+  INSTANCE:     1 << 0,
+  JOIN:         1 << 1,
+  SPECTATE:     1 << 2,
+  JOIN_REQUEST: 1 << 3,
+  SYNC:         1 << 4,
+  PLAY:         1 << 5,
+});
+
+export const GatewayActivityActionTypes = Object.freeze({
+  JOIN: 1,
+  SPECTATE: 2,
+  LISTEN: 3,
+  WATCH: 4,
+  JOIN_REQUEST: 5,
+});
+
+export const GatewayDispatchEvents = normalize({
+  READY: null,
+  RESUMED: null,
+  ACTIVITY_JOIN_INVITE: null,
+  ACTIVITY_JOIN_REQUEST: null,
+  ACTIVITY_START: null,
+  BRAINTREE_POPUP_BRIDGE_CALLBACK: null,
+  CALL_CREATE: null,
+  CALL_DELETE: null,
+  CALL_UPDATE: null,
+  CHANNEL_CREATE: null,
+  CHANNEL_DELETE: null,
+  CHANNEL_UPDATE: null,
+  CHANNEL_PINS_ACK: null,
+  CHANNEL_PINS_UPDATE: null,
+  CHANNEL_RECIPIENT_ADD: null,
+  CHANNEL_RECIPIENT_REMOVE: null,
+  ENTITLEMENT_CREATE: null,
+  ENTITLEMENT_DELETE: null,
+  ENTITLEMENT_UPDATE: null,
+  FRIEND_SUGGESTION_CREATE: null,
+  FRIEND_SUGGESTION_DELETE: null,
+  GIFT_CODE_UPDATE: null,
+  GUILD_BAN_ADD: null,
+  GUILD_BAN_REMOVE: null,
+  GUILD_CREATE: null,
+  GUILD_DELETE: null,
+  GUILD_UPDATE: null,
+  GUILD_EMOJIS_UPDATE: null,
+  GUILD_INTEGRATIONS_UPDATE: null,
+  GUILD_MEMBER_ADD: null,
+  GUILD_MEMBER_LIST_UPDATE: null,
+  GUILD_MEMBER_REMOVE: null,
+  GUILD_MEMBER_UPDATE: null,
+  GUILD_MEMBERS_CHUNK: null,
+  GUILD_ROLE_CREATE: null,
+  GUILD_ROLE_DELETE: null,
+  GUILD_ROLE_UPDATE: null,
+  LIBRARY_APPLICATION_UPDATE: null,
+  LOBBY_CREATE: null,
+  LOBBY_DELETE: null,
+  LOBBY_UPDATE: null,
+  LOBBY_MEMBER_CONNECT: null,
+  LOBBY_MEMBER_DISCONNECT: null,
+  LOBBY_MEMBER_UPDATE: null,
+  LOBBY_MESSAGE: null,
+  LOBBY_VOICE_SERVER_UPDATE: null,
+  LOBBY_VOICE_STATE_UPDATE: null,
+  MESSAGE_ACK: null,
+  MESSAGE_CREATE: null,
+  MESSAGE_DELETE: null,
+  MESSAGE_DELETE_BULK: null,
+  MESSAGE_REACTION_ADD: null,
+  MESSAGE_REACTION_REMOVE: null,
+  MESSAGE_REACTION_REMOVE_ALL: null,
+  MESSAGE_UPDATE: null,
+  OAUTH2_TOKEN_REMOVE: null,
+  PRESENCE_UPDATE: null,
+  PRESENCES_UPDATE: null,
+  RECENT_MENTION_DELETE: null,
+  RELATIONSHIP_ADD: null,
+  RELATIONSHIP_REMOVE: null,
+  SESSIONS_REPLACE: null,
+  STREAM_CREATE: null,
+  STREAM_DELETE: null,
+  STREAM_SERVER_UPDATE: null,
+  STREAM_UPDATE: null,
+  TYPING_START: null,
+  USER_ACHIEVEMENT_UPDATE: null,
+  USER_CONNECTIONS_UPDATE: null,
+  USER_FEED_SETTINGS_UPDATE: null,
+  USER_GUILD_SETTINGS_UPDATE: null,
+  USER_NOTE_UPDATE: null,
+  USER_PAYMENT_SOURCES_UPDATE: null,
+  USER_PAYMENTS_UPDATE: null,
+  USER_SETTINGS_UPDATE: null,
+  USER_SUBSCRIPTIONS_UPDATE: null,
+  USER_REQUIRED_ACTION_UPDATE: null,
+  USER_UPDATE: null,
+  VOICE_SERVER_UPDATE: null,
+  VOICE_STATE_UPDATE: null,
+  WEBHOOKS_UPDATE: null,
+});
+
+export const GatewayOpCodes = Object.freeze({
+  DISPATCH: 0,
+  HEARTBEAT: 1,
+  IDENTIFY: 2,
+  PRESENCE_UPDATE: 3,
+  VOICE_STATE_UPDATE: 4,
+  VOICE_SERVER_PING: 5,
+  RESUME: 6,
+  RECONNECT: 7,
+  REQUEST_GUILD_MEMBERS: 8,
+  INVALID_SESSION: 9,
+  HELLO: 10,
+  HEARTBEAT_ACK: 11,
+  SYNC_GUILD: 12,
+  CALL_CONNECT: 13,
+  GUILD_SUBSCRIPTIONS: 14,
+  LOBBY_CONNECT: 15,
+  LOBBY_DISCONNECT: 16,
+  LOBBY_VOICE_STATES_UPDATE: 17,
+  STREAM_CREATE: 18,
+  STREAM_DELETE: 19,
+  STREAM_WATCH: 20,
+  STREAM_PING: 21,
+  STREAM_SET_PAUSED: 22,
+});
+
+export const GatewayPresenceStatuses = Object.freeze({
+  ONLINE: 'online',
+  DND: 'dnd',
+  IDLE: 'idle',
+  INVISIBLE: 'invisible',
+  OFFLINE: 'offline,'
+});
+
+export const GatewayPresenceTypes = Object.freeze({
+  PLAYING: 0,
+  STREAMING: 1,
+  LISTENING: 2,
+  WATCHING: 3,
+  CUSTOM_STATUS: 4,
+});
+
+export const MaxNumbers = Object.freeze({
+  UINT8:  0xFF,
+  UINT16: 0xFFFF,
+  UINT32: 0xFFFFFFFF,
+});
+
+export const MediaCodecTypes = Object.freeze({
+  AUDIO: 'audio',
+  VIDEO: 'video',
+});
+
+export const MediaCodecs = Object.freeze({
+  OPUS: 'opus',
+  H264: 'H264',
+  VP8: 'VP8',
+  VP9: 'VP9',
+  RTX: 'rtx',
+});
+
+export const MEDIA_CODECS_AUDIO = [
+  MediaCodecs.OPUS,
+];
+
+export const MEDIA_CODECS_VIDEO = [
+  MediaCodecs.VP8,
+  MediaCodecs.VP9,
+  MediaCodecs.H264,
+];
+
+export const MediaEncryptionModes = Object.freeze({
+  PLAIN: 'plain',
+  XSALSA20_POLY1305_LITE: 'xsalsa20_poly1305_lite',
+  XSALSA20_POLY1305_SUFFIX: 'xsalsa20_poly1305_suffix',
+  XSALSA20_POLY1305: 'xsalsa20_poly1305',
+});
+
+export const MEDIA_ENCRYPTION_MODES = Object.values(MediaEncryptionModes);
+
+export const MediaOpCodes = Object.freeze({
+  IDENTIFY: 0,
+  SELECT_PROTOCOL: 1,
+  READY: 2,
+  HEARTBEAT: 3,
+  SELECT_PROTOCOL_ACK: 4,
+  SPEAKING: 5,
+  HEARTBEAT_ACK: 6,
+  RESUME: 7,
+  HELLO: 8,
+  RESUMED: 9,
+  SIGNAL: 10,
+  CLIENT_CONNECT: 12,
+  CLIENT_DISCONNECT: 13,
+  SESSION_UPDATE: 14,
+});
+
+export const MediaProtocols = Object.freeze({
+  UDP: 'udp',
+  WEBRTC: 'webrtc',
+});
+
+export const MEDIA_PROTOCOLS = Object.values(MediaProtocols);
+
+export const MediaReceivedVideoQuality = Object.freeze({
+  OFF: 'off',
+  FULL: 'full',
+});
+
+export const MediaSilencePacket = [0xF8, 0xFF, 0xFE];
+
+export const MediaSpeakingFlags = Object.freeze({
+  NONE: 0,
+  VOICE: 1 << 0,
+  SOUNDSHARE: 1 << 1,
+  PRIORITY: 1 << 2,
+});
+
+export const MediaSSRCTypes = Object.freeze({
+  AUDIO: 'audio',
+  VIDEO: 'video',
+});
+
+export const SocketCloseCodes = Object.freeze({
+  NORMAL: 1000,
+  GOING_AWAY: 1001,
+  PROTOCOL_ERROR: 1002,
+  UNSUPPORTED_DATA: 1003,
+  ABNORMAL_CLOSURE: 1006,
+  INVALID_FRAME: 1007,
+  POLICY_VIOLATION: 1008,
+  MESSAGE_TOO_BIG: 1009,
+  MISSING_EXTENSION: 1010,
+  INTERNAL_ERROR: 1011,
+  SERVICE_RESTART: 1012,
+  TRY_AGAIN_LATER: 1013,
+  BAD_GATEWAY: 1014,
+  RETRY: 4989,
+});
+
+export const SocketStates = normalize({
+  CLOSED: null,
+  CONNECTING: null,
+  CONNECTED: null,
+});
+
+export const RTP_HEADER_VERSION = 0x80;
+
+export const RTPPayloadTypes = Object.freeze({
+  OPUS: 0x78,
+  VP8: 0x65,
+  VP9: 0x67,
+  H264: 0x69,
+});
+
+export const RTP_PAYLOAD_TYPES = Object.values(RTPPayloadTypes);
+
+export const RTCP_HEADER_VERSION = 0x80;
+
+export const RTCPPacketTypes = Object.freeze({
+  SENDER_REPORT: 200,
+  RECEIVER_REPORT: 201,
+  SOURCE_DESCRIPTION: 202,
+  BYE: 203,
+  APP: 204,
+  RTPFB: 205,
+  PSFB: 206,
+});
+
+export const RTCP_PACKET_TYPES = Object.values(RTCPPacketTypes);
+
+export const RTPHeaderExtensionOneByte = Object.freeze({
+  HEADER: [0xBE, 0xDE],
+  LOCAL_IDENTIFER: 0xF,
+});
+
+export const RTPHeaderExtensionTwoByte = Object.freeze({
+  HEADER: [0x10, 0x00],
+});
+
+export const ZLIB_SUFFIX = [0x0, 0x0, 0xff, 0xff];

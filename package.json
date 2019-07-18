@@ -1,17 +1,34 @@
 {
-  "name": "detritus-websocket",
-  "version": "0.1.9",
+  "name": "detritus-client-socket",
+  "version": "0.2.0",
   "description": "a nodejs library to interact with discord's websocket gateway",
-  "main": "./lib/index.js",
-  "directories": {
-    "lib": "lib"
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*"
+  ],
+  "dependencies": {
+    "ws": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^12.0.10"
+  },
+  "peerDependencies": {
+    "erlpack": "^0.1.2",
+    "eventemitter3": "^4.0.0",
+    "pako": "^1.0.10",
+    "sodium-native": "^2.4.2",
+    "tweetnacl": "^1.0.1",
+    "uws": "10.148.1"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepare": "npm run build"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/detritusjs/websocket.git"
+    "url": "git+https://github.com/detritusjs/client-socket.git"
   },
   "keywords": [
     "nodejs",
@@ -22,17 +39,7 @@
   "author": "cakedan",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/detritusjs/websocket/issues"
+    "url": "https://github.com/detritusjs/client-socket/issues"
   },
-  "homepage": "https://github.com/detritusjs/websocket#readme",
-  "dependencies": {
-    "detritus-utils": "^0.0.5",
-    "ws": ">=4.0.0"
-  },
-  "devDependencies": {},
-  "peerDependencies": {
-    "erlpack": ">=0.1.0",
-    "pako": ">=1.0.0",
-    "uws": ">=9.147.0"
-  }
+  "homepage": "https://github.com/detritusjs/client-socket#readme"
 }
