@@ -225,23 +225,39 @@ export class Socket extends EventEmitter {
       data.activities = data.activities.map((activity) => {
         const data: any = {
           application_id: activity.applicationId,
+          assets: activity.assets,
+          created_at: activity.createdAt,
           details: activity.details,
           flags: activity.flags,
+          metadata: activity.metadata,
           name: activity.name,
-          sync_id: activity.syncId,
+          party: activity.party,
+          secrets: activity.secrets,
+          session_id: activity.sessionId,
           state: activity.state,
+          sync_id: activity.syncId,
           timestamps: activity.timestamps,
           type: activity.type,
+          url: activity.url,
         };
         if (activity.assets) {
           data.assets = {
             large_image: activity.assets.largeImage,
             large_text: activity.assets.largeText,
+            small_image: activity.assets.smallImage,
+            small_text: activity.assets.smallText,
           };
         }
         if (activity.party) {
           data.party = {
             id: activity.party.id,
+            size: activity.party.size,
+          };
+        }
+        if (activity.secrets) {
+          data.secrets = {
+            id: data.secrets.id,
+            size: data.secrets.size,
           };
         }
         if (activity.timestamps) {
@@ -844,7 +860,7 @@ export class Socket extends EventEmitter {
   }
 }
 
-interface SocketOptions {
+export interface SocketOptions {
   autoReconnect?: boolean,
   compress?: boolean | string,
   disabledEvents?: Array<string>,
@@ -862,21 +878,32 @@ interface PresenceActivity {
   assets?: {
     largeImage?: string,
     largeText?: string,
+    smallImage?: string,
+    smallText?: string,
   },
+  createdAt?: number,
   details?: string,
   flags?: number,
-  metadata?: any,
+  metadata?: {[key: string]: any},
   name: string,
   party?: {
     id?: string,
+    size?: Array<[number, number]>,
   },
-  syncId?: string,
+  secrets?: {
+    join?: string,
+    match?: string,
+    spectate?: string,
+  },
+  sessionId?: string,
   state?: string,
+  syncId?: string,
   timestamps?: {
     end?: number,
     start?: number,
   },
   type: number,
+  url?: string,
 }
 
 interface PresenceData {
