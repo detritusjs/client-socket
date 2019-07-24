@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.1',
+  VERSION: '0.2.2',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -162,7 +162,7 @@ export const GatewayPresenceStatuses = Object.freeze({
   DND: 'dnd',
   IDLE: 'idle',
   INVISIBLE: 'invisible',
-  OFFLINE: 'offline,'
+  OFFLINE: 'offline',
 });
 
 export const GatewayPresenceTypes = Object.freeze({

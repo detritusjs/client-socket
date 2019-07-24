@@ -1,0 +1,45 @@
+{
+  "name": "detritus-client-socket",
+  "version": "0.2.2",
+  "description": "a nodejs library to interact with discord's websocket gateway",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib/**/*"
+  ],
+  "dependencies": {
+    "ws": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^12.0.10"
+  },
+  "peerDependencies": {
+    "erlpack": "^0.1.2",
+    "eventemitter3": "^4.0.0",
+    "pako": "^1.0.10",
+    "sodium-native": "^2.4.2",
+    "tweetnacl": "^1.0.1",
+    "uws": "10.148.1"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepare": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/detritusjs/client-socket.git"
+  },
+  "keywords": [
+    "nodejs",
+    "discord",
+    "gateway",
+    "library"
+  ],
+  "author": "cakedan",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/detritusjs/client-socket/issues"
+  },
+  "homepage": "https://github.com/detritusjs/client-socket#readme"
+}

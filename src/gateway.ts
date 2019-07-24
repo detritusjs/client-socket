@@ -786,6 +786,7 @@ export class Socket extends EventEmitter {
     guildId?: string,
     channelId?: string,
     options: {
+      forceMode?: string,
       receive?: boolean,
       selfDeaf?: boolean,
       selfMute?: boolean,
@@ -827,6 +828,7 @@ export class Socket extends EventEmitter {
       }
       gateway = new MediaSocket(this, {
         channelId,
+        forceMode: options.forceMode,
         receive: options.receive,
         serverId,
         userId: (<string> this.userId),

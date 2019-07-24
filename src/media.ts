@@ -15,6 +15,16 @@ import { Socket as GatewaySocket } from './gateway';
 import { Socket as MediaUDPSocket } from './mediaudp';
 
 
+interface SocketOptions {
+  channelId: string,
+  forceMode?: string,
+  receive?: boolean,
+  serverId: string,
+  userId: string,
+  video?: boolean,
+}
+
+
 const defaultOptions = {
   receive: false,
   serverId: null,
@@ -25,7 +35,8 @@ const defaultOptions = {
 export class Socket extends EventEmitter {
   bucket: Bucket;
   channelId: string;
-  endpoint: string | null;
+  endpoint: null | string;
+  forceMode: null | string = null;
   gateway: GatewaySocket;
   identified: boolean;
   killed: boolean;
@@ -66,6 +77,13 @@ export class Socket extends EventEmitter {
 
     this.receiveEnabled = !!options.receive;
     this.videoEnabled = !!options.video;
+
+    if (options.forceMode !== undefined) {
+      if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode)) {
+        throw new Error('Unknown Encryption Mode');
+      }
+      this.forceMode = options.forceMode;
+    }
 
     this.bucket = new Bucket(120, 60 * 1000);
     this.endpoint = null;
@@ -553,10 +571,15 @@ export class Socket extends EventEmitter {
 
     if (this.protocol === MediaProtocols.UDP) {
       let mode: null | string = null;
-      for (let m of data.modes) {
-        if (MEDIA_ENCRYPTION_MODES.includes(m)) {
-          mode = m;
-          break;
+      if (this.forceMode && MEDIA_ENCRYPTION_MODES.includes(this.forceMode)) {
+        mode = this.forceMode;
+      }
+      if (mode === null) {
+        for (let m of data.modes) {
+          if (MEDIA_ENCRYPTION_MODES.includes(m)) {
+            mode = m;
+            break;
+          }
         }
       }
       if (mode) {
@@ -650,12 +673,4 @@ export class Socket extends EventEmitter {
       callback,
     );
   }
-}
-
-interface SocketOptions {
-  channelId: string,
-  receive?: boolean,
-  serverId: string,
-  userId: string,
-  video?: boolean,
 }
