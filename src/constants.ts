@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.4',
+  VERSION: '0.2.5',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -104,8 +104,8 @@ export const GatewayDispatchEvents = normalize({
   MESSAGE_REACTION_REMOVE_ALL: null,
   MESSAGE_UPDATE: null,
   OAUTH2_TOKEN_REMOVE: null,
+  PRESENCES_REPLACE: null,
   PRESENCE_UPDATE: null,
-  PRESENCES_UPDATE: null,
   RECENT_MENTION_DELETE: null,
   RELATIONSHIP_ADD: null,
   RELATIONSHIP_REMOVE: null,
