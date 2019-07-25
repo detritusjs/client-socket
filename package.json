@@ -1,6 +1,6 @@
 {
   "name": "detritus-client-socket",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "a nodejs library to interact with discord's websocket gateway",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

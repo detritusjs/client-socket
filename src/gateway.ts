@@ -783,8 +783,8 @@ export class Socket extends EventEmitter {
   }
 
   async voiceConnect(
-    guildId?: string,
-    channelId?: string,
+    guildId?: null | string,
+    channelId?: null | string,
     options: {
       forceMode?: string,
       receive?: boolean,
