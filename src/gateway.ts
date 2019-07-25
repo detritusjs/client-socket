@@ -280,7 +280,7 @@ export class Socket extends EventEmitter {
       properties: IdentifyProperties,
       token: this.token,
     };
-    if (DEFAULT_SHARD_COUNT === this.shardCount) {
+    if (DEFAULT_SHARD_COUNT < this.shardCount) {
       data.shard = [this.shardId, this.shardCount];
     }
     if (this.presence) {
