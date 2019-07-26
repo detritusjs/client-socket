@@ -28,6 +28,46 @@ import {
 } from './mediapackets/rtp';
 import RTPCrypto from './mediapackets/rtpcrypto';
 
+
+export interface FrameOptions {
+  incrementNonce?: boolean,
+  incrementSequence?: boolean,
+  incrementTimestamp?: boolean,
+  nonce?: number,
+  sequence?: number,
+  timestamp?: number,
+  type?: string,
+  useCache?: boolean,
+}
+
+export interface IpInformation {
+  ip: null | string,
+  port: null | number,
+};
+
+export interface RTPPayload {
+  header: RTPHeader,
+  nonce?: Buffer,
+  payload?: Buffer,
+}
+
+export interface TransportPacket {
+  codec: null | string,
+  data: Buffer,
+  format: null | string,
+  from: UDPFrom,
+  rtp?: RTPPayload,
+  userId: null | string,
+}
+
+export interface UDPFrom {
+  address: string,
+  family: string,
+  port: number,
+  size: number,
+}
+
+
 export class Socket extends EventEmitter {
   caches: {
     audio: Buffer,
@@ -333,15 +373,7 @@ export class Socket extends EventEmitter {
     this.connected = false;
   }
 
-  onPacket(
-    packet: Buffer,
-    from: {
-      address: string,
-      family: string,
-      port: number,
-      size: number,
-    },
-  ): void {
+  onPacket(packet: Buffer, from: UDPFrom): void {
     if (!this.receiveEnabled) {return;}
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
       this.emit('warn', new MediaPacketError(
@@ -379,11 +411,7 @@ export class Socket extends EventEmitter {
     if (RTCP_PACKET_TYPES.includes(packetType)) {
 
     } else {
-      const rtp: {
-        header: RTPHeader,
-        nonce?: Buffer,
-        payload?: Buffer,
-      } = {
+      const rtp: RTPPayload = {
         header: new RTPHeader({buffer: packet.slice(0, 12)}),
       };
   
@@ -572,14 +600,16 @@ export class Socket extends EventEmitter {
       if (format !== null) {
         userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, format);
       }
-      this.emit('packet', {
+
+      const payload: TransportPacket = {
         codec,
         data,
         format,
         from,
         rtp,
         userId,
-      });
+      };
+      this.emit('packet', payload);
     }
   }
 
@@ -781,19 +811,3 @@ export class Socket extends EventEmitter {
     });
   }
 }
-
-interface FrameOptions {
-  incrementNonce?: boolean,
-  incrementSequence?: boolean,
-  incrementTimestamp?: boolean,
-  nonce?: number,
-  sequence?: number,
-  timestamp?: number,
-  type?: string,
-  useCache?: boolean,
-}
-
-interface IpInformation {
-  ip: null | string,
-  port: null | number,
-};

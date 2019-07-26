@@ -15,7 +15,7 @@ import { Socket as GatewaySocket } from './gateway';
 import { Socket as MediaUDPSocket } from './mediaudp';
 
 
-interface SocketOptions {
+export interface SocketOptions {
   channelId: string,
   forceMode?: string,
   receive?: boolean,
