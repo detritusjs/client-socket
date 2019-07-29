@@ -70,7 +70,7 @@ export class BaseSocket extends EventEmitter {
     return this.socket.readyState === this.socket.CLOSED;
   }
 
-	get closing(): boolean {
+  get closing(): boolean {
     return this.socket.readyState === this.socket.CLOSING;
   }
 
@@ -78,7 +78,7 @@ export class BaseSocket extends EventEmitter {
     return this.socket.readyState === this.socket.OPEN;
   }
 
-	get connecting(): boolean {
+  get connecting(): boolean {
     return this.socket.readyState === this.socket.CONNECTING;
   }
 
