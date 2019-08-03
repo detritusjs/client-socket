@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.7',
+  VERSION: '0.2.8',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -268,7 +268,37 @@ export const SocketCloseCodes = Object.freeze({
   SERVICE_RESTART: 1012,
   TRY_AGAIN_LATER: 1013,
   BAD_GATEWAY: 1014,
-  RETRY: 4989,
+  INTERNAL_RETRY: 4999,
+});
+
+export const SocketGatewayCloseCodes = Object.freeze({
+  UNKNOWN_ERROR: 4000,
+  UNKNOWN_OPCODE: 4001,
+  DECODE_ERROR: 4002,
+  NOT_AUTHENTICATED: 4003,
+  AUTHENTICATION_FAILED: 4004,
+  ALREADY_AUTHENTICATED: 4005,
+  INVALID_SEQUENCE: 4007,
+  RATE_LIMITED: 4008,
+  SESSION_TIMEOUT: 4009,
+  INVALID_SHARD: 4010,
+  SHARDING_REQUIRED: 4011,
+});
+
+export const SocketMediaCloseCodes = Object.freeze({
+  UNKNOWN_ERROR: 4000,
+  UNKNOWN_OPCODE: 4001,
+  DECODE_ERROR: 4002,
+  NOT_AUTHENTICATED: 4003,
+  AUTHENTICATION_FAILED: 4004,
+  ALREADY_AUTHENTICATED: 4005,
+  SESSION_NO_LONGER_VALID: 4006,
+  SESSION_TIMEOUT: 4009,
+  SERVER_NOT_FOUND: 4011,
+  UNKNOWN_PROTOCOL: 4012,
+  DISCONNECTED: 4014,
+  VOICE_SERVER_CRASHED: 4015,
+  UNKNOWN_ENCRYPTION_MODE: 4016,
 });
 
 export const SocketStates = normalize({

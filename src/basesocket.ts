@@ -2,7 +2,7 @@ import EventEmitter from './eventemitter';
 import { SocketCloseCodes } from './constants';
 
 export const DependencyTypes = Object.freeze({
-  UWS: 'uWebSockets.js',
+  UWS: 'uws',
   WS: 'ws',
 });
 
@@ -11,10 +11,13 @@ export const WebsocketEvents = {
   ERROR: 'error',
   MESSAGE: 'message',
   OPEN: 'open',
+  PING: 'ping',
   PONG: 'pong',
+  UNEXPECTED_RESPONSE: 'unexpected-response',
+  UPGRADE: 'upgrade',
 };
 
-export const WebsocketDepedency: {
+export const WebsocketDependency: {
   module: any,
   type: string,
 } = {
@@ -27,12 +30,12 @@ export const WebsocketDepedency: {
   DependencyTypes.UWS,
 ].forEach((dependency) => {
   try {
-    WebsocketDepedency.module = require(dependency);
-    WebsocketDepedency.type = dependency;
+    WebsocketDependency.module = require(dependency);
+    WebsocketDependency.type = dependency;
   } catch(e) {}
 });
 
-if (WebsocketDepedency.module === null) {
+if (WebsocketDependency.module === null) {
   throw new Error(`Missing a WebSocket Dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`)
 }
 
@@ -45,7 +48,7 @@ export class BaseSocket extends EventEmitter {
 
   constructor(url: string) {
     super();
-    this.socket = new WebsocketDepedency.module(url);
+    this.socket = new WebsocketDependency.module(url);
     this.pings = new Map();
 
     this.socket.on('pong', (data: any) => {
@@ -80,6 +83,10 @@ export class BaseSocket extends EventEmitter {
 
   get connecting(): boolean {
     return this.socket.readyState === this.socket.CONNECTING;
+  }
+
+  get using(): string {
+    return WebsocketDependency.type;
   }
 
   send(

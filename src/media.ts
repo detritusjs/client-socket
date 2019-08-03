@@ -371,7 +371,7 @@ export class Socket extends EventEmitter {
       case MediaOpCodes.HEARTBEAT_ACK: {
         if (packet.d !== this._heartbeat.nonce) {
           this.disconnect(
-            SocketCloseCodes.RETRY,
+            SocketCloseCodes.INTERNAL_RETRY,
             'Invalid nonce received by Heartbeat ACK',
           );
           this.connect();
@@ -497,15 +497,15 @@ export class Socket extends EventEmitter {
     fromInterval: boolean = false,
   ): void {
     if (fromInterval && (this._heartbeat.lastSent && !this._heartbeat.ack)) {
-      this.disconnect(SocketCloseCodes.RETRY, 'Heartbeat ACK never arrived.');
+      this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Heartbeat ACK never arrived.');
       this.connect();
       return;
     }
-    this._heartbeat.ack = false;
     this._heartbeat.nonce = Date.now();
     this.send(MediaOpCodes.HEARTBEAT, this._heartbeat.nonce, () => {
+      this._heartbeat.ack = false;
       this._heartbeat.lastSent = Date.now();
-    });
+    }, true);
   }
 
   setHeartbeat(data: {

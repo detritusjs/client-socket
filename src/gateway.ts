@@ -48,6 +48,7 @@ const defaultOptions = Object.freeze({
   largeThreshold: 250,
   presence: null,
   reconnectDelay: 5000,
+  reconnectMax: 5,
   shardCount: 1,
   shardId: 0
 });
@@ -65,29 +66,37 @@ export class Socket extends EventEmitter {
     lastSent: null | number,
     interval: null | ReturnType<typeof setInterval>,
     intervalTime: null | number,
+  } = {
+    ack: false,
+    lastAck: null,
+    lastSent: null,
+    interval: null,
+    intervalTime: null,
   };
   autoReconnect: boolean;
   bucket: Bucket;
   compress: string;
   disabledEvents: Array<string>;
-  discordTrace: Array<any>;
+  discordTrace: Array<any> = [];
   decompressor: Decompressor | null;
   encoding: string;
   guildSubscriptions: boolean;
-  killed: boolean;
+  killed: boolean = false;
   largeThreshold: number;
-  mediaGateways: Map<string, any>;
+  mediaGateways = new Map<string, MediaSocket>();
   presence: PresenceOptions;
   reconnectDelay: number;
-  resuming: boolean;
-  sequence: number;
-  sessionId: null | string;
+  reconnectMax: number;
+  reconnects: number = 0;
+  resuming: boolean = false;
+  sequence: number = 0;
+  sessionId: null | string = null;
   shardCount: number;
   shardId: number;
-  socket: BaseSocket | null;
+  socket: BaseSocket | null = null;
   token: string;
-  url: URL | null;
-  userId: null | string;
+  url: URL | null = null;
+  userId: null | string = null;
 
   constructor(
     token: string,
@@ -116,6 +125,7 @@ export class Socket extends EventEmitter {
       activities: [],
     }, defaultPresence, options.presence);
     this.reconnectDelay = <number> options.reconnectDelay;
+    this.reconnectMax = <number> options.reconnectMax;
     this.shardCount = <number> options.shardCount;
     this.shardId = <number> options.shardId;
     this.token = token;
@@ -149,28 +159,11 @@ export class Socket extends EventEmitter {
       this.decompressor.on('data', (data: any) => {
         this.handle(data, true);
       }).on('error', (error: any) => {
-        this.disconnect(SocketCloseCodes.RETRY, 'Invalid data received, reconnecting.');
+        this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Invalid data received, reconnecting.');
         this.emit('warn', error);
       });
     }
 
-    this.discordTrace = [];
-    this.killed = false;
-    this.resuming = false;
-    this.sequence = 0;
-    this.sessionId = null;
-    this.socket = null;
-    this.url = null;
-    this.userId = null;
-
-    this.mediaGateways = new Map();
-    this._heartbeat = {
-      ack: false,
-      lastAck: null,
-      lastSent: null,
-      interval: null,
-      intervalTime: null,
-    };
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
       killed: {configurable: true},
@@ -274,7 +267,8 @@ export class Socket extends EventEmitter {
 
   getIdentifyData(): IdentifyData {
     const data: IdentifyData = {
-      compress: (this.compress === CompressTypes.PAYLOAD),//payload compression, rather use transport compression, using the get params overrides this
+      /* payload compression, rather use transport compression, using the get params overrides this */
+      compress: (this.compress === CompressTypes.PAYLOAD),
       guild_subscriptions: this.guildSubscriptions,
       large_threshold: this.largeThreshold,
       properties: IdentifyProperties,
@@ -344,24 +338,10 @@ export class Socket extends EventEmitter {
 
     const ws = this.socket = new BaseSocket(this.url.href);
     this.emit('socket', ws);
-    ws.on('open', this.emit.bind(this, 'open'));
-    ws.on('error', this.emit.bind(this, 'warn'));
-    ws.on('message', (data: any) => {
-      if (ws === this.socket) {
-        this.handle(data);
-      }
-    });
-    ws.on('close', (code: number | string, reason: string) => {
-      this.emit('close', {code, reason});
-      if (!this.socket || ws === this.socket) {
-        this.disconnect(code, reason);
-        if (this.autoReconnect && !this.killed) {
-          setTimeout(() => {
-            this.connect();
-          }, this.reconnectDelay);
-        }
-      }
-    });
+    ws.socket.onclose = this.onClose.bind(this);
+    ws.socket.onerror = this.onError.bind(this);
+    ws.socket.onmessage = this.onMessage.bind(this);
+    ws.socket.onopen = this.onOpen.bind(this);
   }
 
   decode(
@@ -427,11 +407,6 @@ export class Socket extends EventEmitter {
 			}; break;
 			case GatewayOpCodes.HELLO: {
 				this.setHeartbeat(packet.d);
-				if (this.sessionId) {
-					this.resume();
-				} else {
-					this.identify();
-				}
 			}; break;
 			case GatewayOpCodes.INVALID_SESSION: {
 				setTimeout(() => {
@@ -445,7 +420,7 @@ export class Socket extends EventEmitter {
 				}, Math.floor(Math.random() * 5 + 1) * 1000);
 			}; break;
 			case GatewayOpCodes.RECONNECT: {
-				this.disconnect(SocketCloseCodes.RETRY, 'Reconnecting');
+				this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Reconnecting');
 				this.connect();
 			}; break;
 			case GatewayOpCodes.DISPATCH: {
@@ -461,13 +436,16 @@ export class Socket extends EventEmitter {
     switch (name) {
       case GatewayDispatchEvents.READY: {
         this.bucket.unlock();
+        this.reconnects = 0;
         this.discordTrace = data['_trace'];
         this.sessionId = data['session_id'];
         this.userId = data['user']['id'];
         this.emit('ready');
       }; break;
       case GatewayDispatchEvents.RESUMED: {
+        this.reconnects = 0;
         this.resuming = false;
+        this.bucket.unlock();
       }; break;
       case GatewayDispatchEvents.GUILD_DELETE: {
         const serverId = <string> data['id'];
@@ -483,7 +461,7 @@ export class Socket extends EventEmitter {
       case GatewayDispatchEvents.VOICE_SERVER_UPDATE: {
         const serverId = <string> (data['guild_id'] || data['channel_id']);
         if (this.mediaGateways.has(serverId)) {
-          const gateway = this.mediaGateways.get(serverId);
+          const gateway = <MediaSocket> this.mediaGateways.get(serverId);
           gateway.setEndpoint(data['endpoint']);
           gateway.setToken(data['token']);
         }
@@ -514,10 +492,45 @@ export class Socket extends EventEmitter {
     if (!this.killed) {
       Object.defineProperty(this, 'killed', {value: true});
       this.disconnect(SocketCloseCodes.NORMAL);
-      for (let socket of this.mediaGateways.values()) {
+      for (let [serverId, socket] of this.mediaGateways) {
         socket.kill();
       }
       this.emit('killed');
+    }
+  }
+
+  onClose(event: {code: number | string, reason: string}) {
+    const code = event.code;
+    const reason = event.reason || 'Unknown Reason';
+    this.emit('close', {code, reason});
+    this.disconnect(code, reason);
+    if (this.autoReconnect && !this.killed) {
+      if (this.reconnectMax < this.reconnects) {
+        this.kill();
+      } else {
+        setTimeout(() => {
+          this.connect();
+          this.reconnects++;
+        }, this.reconnectDelay);
+      }
+    }
+  }
+
+  onError(event: {error: any} | any) {
+    this.emit('warn', event.error);
+  }
+
+  onMessage(event: {data: any, type: string}) {
+    const { data } = event;
+    this.handle(data);
+  }
+
+  onOpen() {
+    this.emit('open');
+    if (this.sessionId) {
+      this.resume();
+    } else {
+      this.identify();
     }
   }
 
@@ -548,7 +561,7 @@ export class Socket extends EventEmitter {
     } catch(error) {
       this.emit('warn', error);
     }
-    if (data) {
+    if (data !== undefined) {
       if (direct) {
         if (this.connected) {
           (<BaseSocket> this.socket).send(data, callback);
@@ -577,12 +590,14 @@ export class Socket extends EventEmitter {
 
   heartbeat(fromInterval: boolean = false): void {
     if (fromInterval && !this._heartbeat.ack) {
-      this.disconnect(SocketCloseCodes.RETRY, 'Heartbeat ACK never arrived.');
+      this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Heartbeat ACK never arrived.');
       this.connect();
     } else {
-      this._heartbeat.ack = false;
-      this._heartbeat.lastSent = Date.now();
-      this.send(GatewayOpCodes.HEARTBEAT, (this.sequence) ? this.sequence : null);
+      const sequence = (this.sequence) ? this.sequence : null;
+      this.send(GatewayOpCodes.HEARTBEAT, sequence, () => {
+        this._heartbeat.ack = false;
+        this._heartbeat.lastSent = Date.now();
+      }, true);
     }
   }
 
@@ -813,7 +828,7 @@ export class Socket extends EventEmitter {
     const serverId = <string> (guildId || channelId);
     let gateway: MediaSocket;
     if (this.mediaGateways.has(serverId)) {
-      gateway = this.mediaGateways.get(serverId);
+      gateway = <MediaSocket> this.mediaGateways.get(serverId);
       if (!channelId) {
         gateway.kill();
         return null;
@@ -871,6 +886,7 @@ export interface SocketOptions {
   largeThreshold?: number,
   presence?: any,
   reconnectDelay?: number,
+  reconnectMax?: number,
   shardCount?: number,
   shardId?: number,
 }
