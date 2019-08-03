@@ -7,6 +7,8 @@ import {
   MediaSpeakingFlags,
   MediaSSRCTypes,
   SocketCloseCodes,
+  SocketInternalCloseCodes,
+  SocketInternalCloseReasons,
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
 } from './constants';
@@ -33,26 +35,6 @@ const defaultOptions = {
 };
 
 export class Socket extends EventEmitter {
-  bucket: Bucket;
-  channelId: string;
-  endpoint: null | string;
-  forceMode: null | string = null;
-  gateway: GatewaySocket;
-  identified: boolean;
-  killed: boolean;
-  promises: Set<{reject: Function, resolve: Function}>;
-  protocol: null | string;
-  ready: boolean;
-  receiveEnabled: boolean;
-  serverId: string;
-  socket: null | BaseSocket;
-  ssrcs: {
-    [key: string]: Map<number, string>,
-  };
-  transport: null | MediaUDPSocket;
-  token: null | string;
-  userId: string;
-  videoEnabled: boolean;
   _heartbeat: {
     ack: boolean,
     lastAck: null | number,
@@ -60,7 +42,38 @@ export class Socket extends EventEmitter {
     interval: null | ReturnType<typeof setInterval>,
     intervalTime: null | number,
     nonce: null | number,
+  } = {
+    ack: false,
+    lastAck: null,
+    lastSent: null,
+    interval: null,
+    intervalTime: null,
+    nonce: null,
   };
+  bucket = new Bucket(120, 60 * 1000);
+  channelId: string;
+  endpoint: null | string = null;
+  forceMode: null | string = null;
+  gateway: GatewaySocket;
+  identified: boolean = false;
+  killed: boolean = false;
+  promises = new Set<{reject: Function, resolve: Function}>();
+  protocol: null | string = null;
+  ready: boolean = false;
+  receiveEnabled: boolean = false;
+  reconnects: number = 0;
+  serverId: string;
+  socket: BaseSocket | null = null;
+  ssrcs: {
+    [key: string]: Map<number, string>,
+  } = {
+    [MediaSSRCTypes.AUDIO]: new Map(),
+    [MediaSSRCTypes.VIDEO]: new Map(),
+  };
+  transport: MediaUDPSocket | null = null;
+  token: null | string = null;
+  userId: string;
+  videoEnabled: boolean;
 
   constructor(
     gateway: GatewaySocket,
@@ -68,7 +81,6 @@ export class Socket extends EventEmitter {
   ) {
     super();
     this.gateway = gateway;
-    this.socket = null;
 
     options = Object.assign({}, defaultOptions, options);
     this.channelId = options.channelId;
@@ -84,29 +96,6 @@ export class Socket extends EventEmitter {
       }
       this.forceMode = options.forceMode;
     }
-
-    this.bucket = new Bucket(120, 60 * 1000);
-    this.endpoint = null;
-    this.identified = false;
-    this.killed = false;
-    this.promises = new Set();
-    this.protocol = null;
-    this.ready = false;
-    this.ssrcs = {
-      [MediaSSRCTypes.AUDIO]: new Map(),
-      [MediaSSRCTypes.VIDEO]: new Map(),
-    };
-    this.token = null;
-    this.transport = null;
-
-    this._heartbeat = {
-      ack: false,
-      lastAck: null,
-      lastSent: null,
-      interval: null,
-      intervalTime: null,
-      nonce: null,
-    };
   
     Object.defineProperties(this, {
       channelId: {configurable: true, writable: false},
@@ -239,7 +228,7 @@ export class Socket extends EventEmitter {
   }
 
   cleanup(
-    code?: string | number,
+    code?: number,
   ): void {
     Object.defineProperty(this, 'ready', {value: false});
     this.bucket.clear();
@@ -248,7 +237,7 @@ export class Socket extends EventEmitter {
     this.ssrcs[MediaSSRCTypes.AUDIO].clear();
     this.ssrcs[MediaSSRCTypes.VIDEO].clear();
 
-    if (typeof(code) === 'number') {
+    if (code !== undefined) {
       if (code === SocketCloseCodes.NORMAL || (4000 <= code && code <= 4016)) {
         this.identified = false;
       }
@@ -258,8 +247,8 @@ export class Socket extends EventEmitter {
       this._heartbeat.interval = null;
     }
     this._heartbeat.ack = false;
-		this._heartbeat.lastAck = null;
-		this._heartbeat.lastSent = null;
+    this._heartbeat.lastAck = null;
+    this._heartbeat.lastSent = null;
     this._heartbeat.intervalTime = null;
     this._heartbeat.nonce = null;
   }
@@ -284,27 +273,10 @@ export class Socket extends EventEmitter {
 
     const ws = this.socket = new BaseSocket(url.href);
     this.emit('socket', ws);
-    ws.on('open', () => {
-      this.emit('open');
-      if (this.identified && this.transport) {
-        this.resume();
-      } else {
-        this.identify();
-      }
-    });
-    ws.on('close', (code: number | string, reason: string) => {
-      this.emit('close', {code, reason});
-      if (!this.socket || ws === this.socket) {
-        this.cleanup(code);
-        if (!this.killed) {
-          setTimeout(() => {
-            this.connect();
-          }, this.gateway.reconnectDelay);
-        }
-      }
-    });
-    ws.on('error', this.emit.bind(this, 'warn'));
-    ws.on('message', this.handle.bind(this));
+    ws.socket.onclose = this.onClose.bind(this, ws);
+    ws.socket.onerror = this.onError.bind(this, ws);
+    ws.socket.onmessage = this.onMessage.bind(this, ws);
+    ws.socket.onopen = this.onOpen.bind(this, ws);
   }
 
   decode(data: any): any {
@@ -316,11 +288,14 @@ export class Socket extends EventEmitter {
   }
 
   disconnect(
-    code?: string | number,
+    code: number = SocketCloseCodes.NORMAL,
     reason?: string,
   ): void {
     this.cleanup(code);
     if (this.socket) {
+      if (!reason && (code in SocketInternalCloseReasons)) {
+        reason = <string> SocketInternalCloseReasons[code];
+      }
       this.socket.close(code, reason);
     }
     this.socket = null;
@@ -342,6 +317,7 @@ export class Socket extends EventEmitter {
 
     switch (packet.op) {
       case MediaOpCodes.READY: {
+        this.reconnects = 0;
         Object.defineProperty(this, 'ready', {value: true});
         this.identified = true;
         this.bucket.unlock();
@@ -370,10 +346,7 @@ export class Socket extends EventEmitter {
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
         if (packet.d !== this._heartbeat.nonce) {
-          this.disconnect(
-            SocketCloseCodes.INTERNAL_RETRY,
-            'Invalid nonce received by Heartbeat ACK',
-          );
+          this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK_NONCE);
           this.connect();
           return;
         }
@@ -381,6 +354,7 @@ export class Socket extends EventEmitter {
         this._heartbeat.ack = true;
       }; break;
       case MediaOpCodes.RESUMED: {
+        this.reconnects = 0;
         Object.defineProperty(this, 'ready', {value: true});
         this.bucket.unlock();
       }; break;
@@ -428,8 +402,8 @@ export class Socket extends EventEmitter {
       case MediaOpCodes.SPEAKING: {
         this.ssrcs[MediaSSRCTypes.AUDIO].set(packet.d.ssrc, packet.d.user_id);
         // use the bitmasks Constants.Discord.SpeakingFlags
-				// emit it?
-				// check to see if it already existed, if not, create decode/encoders
+        // emit it?
+        // check to see if it already existed, if not, create decode/encoders
       }; break;
     }
   }
@@ -448,6 +422,62 @@ export class Socket extends EventEmitter {
     }
     this.resolvePromises(error || new Error('Media Gateway was killed.'));
     this.emit('killed');
+  }
+
+  onClose(
+    target: BaseSocket,
+    event: {code: number, reason: string},
+  ) {
+    let { code, reason } = event;
+    if (!reason && (code in SocketInternalCloseReasons)) {
+      reason = <string> SocketInternalCloseReasons[code];
+    }
+    this.emit('close', {code, reason});
+    if (!this.socket || this.socket === target) {
+      this.cleanup(code);
+      if (this.gateway.autoReconnect && !this.killed) {
+        if (this.gateway.reconnectMax < this.reconnects) {
+          this.kill();
+        } else {
+          setTimeout(() => {
+            this.connect();
+            this.reconnects++;
+          }, this.gateway.reconnectDelay);
+        }
+      }
+    }
+  }
+
+  onError(
+    target: BaseSocket,
+    event: {error: any} | any,
+  ) {
+    this.emit('warn', event.error);
+  }
+
+  onMessage(
+    target: BaseSocket,
+    event: {data: any, type: string},
+  ) {
+    if (this.socket === target) {
+      const { data } = event;
+      this.handle(data);
+    } else {
+      target.close(SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE);
+    }
+  }
+
+  onOpen(target: BaseSocket) {
+    this.emit('open');
+    if (this.socket === target) {
+      if (this.identified && this.transport) {
+        this.resume();
+      } else {
+        this.identify();
+      }
+    } else {
+      target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
+    }
   }
 
   async ping(timeout?: number): Promise<any> {
@@ -497,7 +527,7 @@ export class Socket extends EventEmitter {
     fromInterval: boolean = false,
   ): void {
     if (fromInterval && (this._heartbeat.lastSent && !this._heartbeat.ack)) {
-      this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Heartbeat ACK never arrived.');
+      this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK);
       this.connect();
       return;
     }

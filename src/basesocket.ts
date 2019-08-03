@@ -99,7 +99,7 @@ export class BaseSocket extends EventEmitter {
   }
 
   close(
-    code: number | string = SocketCloseCodes.NORMAL,
+    code: number = SocketCloseCodes.NORMAL,
     reason: string = '',
   ): void {
     if (this.connected) {

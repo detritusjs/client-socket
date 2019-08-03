@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.8',
+  VERSION: '0.2.9',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -268,7 +268,26 @@ export const SocketCloseCodes = Object.freeze({
   SERVICE_RESTART: 1012,
   TRY_AGAIN_LATER: 1013,
   BAD_GATEWAY: 1014,
-  INTERNAL_RETRY: 4999,
+});
+
+export const SocketInternalCloseCodes = Object.freeze({
+  INVALID_DATA: 4800,
+  RECONNECTING: 4801,
+  HEARTBEAT_ACK: 4802,
+  HEARTBEAT_ACK_NONCE: 4803,
+  OTHER_SOCKET_MESSAGE: 4804,
+  OTHER_SOCKET_OPEN: 4805,
+});
+
+export const SocketInternalCloseReasons: {
+  [key: number]: string | undefined,
+} = Object.freeze({
+  [SocketInternalCloseCodes.INVALID_DATA]: 'Invalid data received, reconnecting',
+  [SocketInternalCloseCodes.RECONNECTING]: 'Reconnecting',
+  [SocketInternalCloseCodes.HEARTBEAT_ACK]: 'Heartbeat ACK never arrived',
+  [SocketInternalCloseCodes.HEARTBEAT_ACK_NONCE]: 'Invalid nonce received by Heartbeat ACK',
+  [SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE]: 'Received message from not our current socket',
+  [SocketInternalCloseCodes.OTHER_SOCKET_OPEN]: 'Received open from not our current socket',
 });
 
 export const SocketGatewayCloseCodes = Object.freeze({

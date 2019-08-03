@@ -18,6 +18,8 @@ import {
   GatewayPresenceStatuses,
   Package,
   SocketCloseCodes,
+  SocketInternalCloseCodes,
+  SocketInternalCloseReasons,
   ZLIB_SUFFIX,
 } from './constants';
 
@@ -159,7 +161,7 @@ export class Socket extends EventEmitter {
       this.decompressor.on('data', (data: any) => {
         this.handle(data, true);
       }).on('error', (error: any) => {
-        this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Invalid data received, reconnecting.');
+        this.disconnect(SocketInternalCloseCodes.INVALID_DATA);
         this.emit('warn', error);
       });
     }
@@ -308,9 +310,9 @@ export class Socket extends EventEmitter {
       this._heartbeat.interval = null;
     }
     this._heartbeat.ack = false;
-		this._heartbeat.lastAck = null;
-		this._heartbeat.lastSent = null;
-		this._heartbeat.intervalTime = null;
+    this._heartbeat.lastAck = null;
+    this._heartbeat.lastSent = null;
+    this._heartbeat.intervalTime = null;
   }
 
   connect(
@@ -338,10 +340,10 @@ export class Socket extends EventEmitter {
 
     const ws = this.socket = new BaseSocket(this.url.href);
     this.emit('socket', ws);
-    ws.socket.onclose = this.onClose.bind(this);
-    ws.socket.onerror = this.onError.bind(this);
-    ws.socket.onmessage = this.onMessage.bind(this);
-    ws.socket.onopen = this.onOpen.bind(this);
+    ws.socket.onclose = this.onClose.bind(this, ws);
+    ws.socket.onerror = this.onError.bind(this, ws);
+    ws.socket.onmessage = this.onMessage.bind(this, ws);
+    ws.socket.onopen = this.onOpen.bind(this, ws);
   }
 
   decode(
@@ -370,11 +372,14 @@ export class Socket extends EventEmitter {
   }
 
   disconnect(
-    code?: string | number,
+    code: number = SocketCloseCodes.NORMAL,
     reason?: string,
   ): void {
     this.cleanup(code);
     if (this.socket) {
+      if (!reason && (code in SocketInternalCloseReasons)) {
+        reason = <string> SocketInternalCloseReasons[code];
+      }
       this.socket.close(code, reason);
     }
     this.socket = null;
@@ -399,33 +404,33 @@ export class Socket extends EventEmitter {
 
     switch (packet.op) {
       case GatewayOpCodes.HEARTBEAT: {
-				this.heartbeat();
-			}; break;
-			case GatewayOpCodes.HEARTBEAT_ACK: {
-				this._heartbeat.ack = true;
-				this._heartbeat.lastAck = Date.now();
-			}; break;
-			case GatewayOpCodes.HELLO: {
-				this.setHeartbeat(packet.d);
-			}; break;
-			case GatewayOpCodes.INVALID_SESSION: {
-				setTimeout(() => {
-					if (packet.d) {
-						this.resume();
-					} else {
-						this.sequence = 0;
-						this.sessionId = null;
-						this.identify();
-					}
-				}, Math.floor(Math.random() * 5 + 1) * 1000);
-			}; break;
-			case GatewayOpCodes.RECONNECT: {
-				this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Reconnecting');
-				this.connect();
-			}; break;
-			case GatewayOpCodes.DISPATCH: {
-				this.handleDispatch(packet.t, packet.d);
-			}; break;
+        this.heartbeat();
+      }; break;
+      case GatewayOpCodes.HEARTBEAT_ACK: {
+        this._heartbeat.ack = true;
+        this._heartbeat.lastAck = Date.now();
+      }; break;
+      case GatewayOpCodes.HELLO: {
+        this.setHeartbeat(packet.d);
+      }; break;
+      case GatewayOpCodes.INVALID_SESSION: {
+        setTimeout(() => {
+          if (packet.d) {
+            this.resume();
+          } else {
+            this.sequence = 0;
+            this.sessionId = null;
+            this.identify();
+          }
+        }, Math.floor(Math.random() * 5 + 1) * 1000);
+      }; break;
+      case GatewayOpCodes.RECONNECT: {
+        this.disconnect(SocketInternalCloseCodes.RECONNECTING);
+        this.connect();
+      }; break;
+      case GatewayOpCodes.DISPATCH: {
+        this.handleDispatch(packet.t, packet.d);
+      }; break;
     }
   }
 
@@ -446,6 +451,7 @@ export class Socket extends EventEmitter {
         this.reconnects = 0;
         this.resuming = false;
         this.bucket.unlock();
+        this.emit('resumed');
       }; break;
       case GatewayDispatchEvents.GUILD_DELETE: {
         const serverId = <string> data['id'];
@@ -499,38 +505,59 @@ export class Socket extends EventEmitter {
     }
   }
 
-  onClose(event: {code: number | string, reason: string}) {
-    const code = event.code;
-    const reason = event.reason || 'Unknown Reason';
+  onClose(
+    target: BaseSocket,
+    event: {code: number, reason: string},
+  ) {
+    let { code, reason } = event;
+    if (!reason && (code in SocketInternalCloseReasons)) {
+      reason = <string> SocketInternalCloseReasons[code];
+    }
     this.emit('close', {code, reason});
-    this.disconnect(code, reason);
-    if (this.autoReconnect && !this.killed) {
-      if (this.reconnectMax < this.reconnects) {
-        this.kill();
-      } else {
-        setTimeout(() => {
-          this.connect();
-          this.reconnects++;
-        }, this.reconnectDelay);
+    if (!this.socket || this.socket === target) {
+      this.disconnect(code, reason);
+      if (this.autoReconnect && !this.killed) {
+        if (this.reconnectMax < this.reconnects) {
+          this.kill();
+        } else {
+          setTimeout(() => {
+            this.connect();
+            this.reconnects++;
+          }, this.reconnectDelay);
+        }
       }
     }
   }
 
-  onError(event: {error: any} | any) {
+  onError(
+    target: BaseSocket,
+    event: {error: any} | any,
+  ) {
     this.emit('warn', event.error);
   }
 
-  onMessage(event: {data: any, type: string}) {
-    const { data } = event;
-    this.handle(data);
+  onMessage(
+    target: BaseSocket,
+    event: {data: any, type: string},
+  ) {
+    if (this.socket === target) {
+      const { data } = event;
+      this.handle(data);
+    } else {
+      target.close(SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE);
+    }
   }
 
-  onOpen() {
-    this.emit('open');
-    if (this.sessionId) {
-      this.resume();
+  onOpen(target: BaseSocket) {
+    this.emit('open', target);
+    if (this.socket === target) {
+      if (this.sessionId) {
+        this.resume();
+      } else {
+        this.identify();
+      }
     } else {
-      this.identify();
+      target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
     }
   }
 
@@ -590,7 +617,7 @@ export class Socket extends EventEmitter {
 
   heartbeat(fromInterval: boolean = false): void {
     if (fromInterval && !this._heartbeat.ack) {
-      this.disconnect(SocketCloseCodes.INTERNAL_RETRY, 'Heartbeat ACK never arrived.');
+      this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK);
       this.connect();
     } else {
       const sequence = (this.sequence) ? this.sequence : null;
