@@ -301,7 +301,8 @@ export class Socket extends EventEmitter {
     if (this.decompressor) {
       this.decompressor.reset();
     }
-    if (code === SocketCloseCodes.NORMAL || code === SocketCloseCodes.GOING_AWAY) {
+    // 1000 close code, un-resumable
+    if (code === SocketCloseCodes.NORMAL) {
       this.sequence = 0;
       this.sessionId = null;
     }

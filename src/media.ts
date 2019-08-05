@@ -9,6 +9,7 @@ import {
   SocketCloseCodes,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
+  SocketMediaCloseCodes,
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
 } from './constants';
@@ -237,10 +238,15 @@ export class Socket extends EventEmitter {
     this.ssrcs[MediaSSRCTypes.AUDIO].clear();
     this.ssrcs[MediaSSRCTypes.VIDEO].clear();
 
-    if (code !== undefined) {
-      if (code === SocketCloseCodes.NORMAL || (4000 <= code && code <= 4016)) {
-        this.identified = false;
-      }
+    // Normal Disconnected
+    // Voice Channel Kick/Deleted
+    // Voice Server Crashed
+    if (
+      (code === SocketCloseCodes.NORMAL) ||
+      (code === SocketMediaCloseCodes.DISCONNECTED) ||
+      (code === SocketMediaCloseCodes.VOICE_SERVER_CRASHED)
+    ) {
+      this.identified = false;
     }
     if (this._heartbeat.interval !== null) {
       clearInterval(<number> <unknown> this._heartbeat.interval);
