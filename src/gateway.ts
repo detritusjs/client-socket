@@ -11,15 +11,18 @@ import { Socket as MediaSocket } from './media';
 import {
   ApiVersions,
   CompressTypes,
-  DEFAULT_SHARD_COUNT,
   EncodingTypes,
   GatewayDispatchEvents,
   GatewayOpCodes,
   GatewayPresenceStatuses,
   Package,
   SocketCloseCodes,
+  SocketEvents,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
+  SocketStates,
+  DEFAULT_SHARD_COUNT,
+  SOCKET_STATES,
   ZLIB_SUFFIX,
 } from './constants';
 
@@ -62,6 +65,8 @@ const defaultPresence = Object.freeze({
 });
 
 export class Socket extends EventEmitter {
+  readonly state: string = SocketStates.CLOSED;
+
   _heartbeat: {
     ack: boolean,
     lastAck: null | number,
@@ -162,13 +167,14 @@ export class Socket extends EventEmitter {
         this.handle(data, true);
       }).on('error', (error: any) => {
         this.disconnect(SocketInternalCloseCodes.INVALID_DATA);
-        this.emit('warn', error);
+        this.emit(SocketEvents.WARN, error);
       });
     }
 
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
       killed: {configurable: true},
+      state: {configurable: true, writable: false},
     });
   }
 
@@ -190,6 +196,13 @@ export class Socket extends EventEmitter {
 
   get initializing(): boolean {
     return !this.socket;
+  }
+
+  setState(value: string): void {
+    if (SOCKET_STATES.includes(value) && value !== this.state) {
+      Object.defineProperty(this, 'state', {value});
+      this.emit(SocketEvents.STATE, {state: value});
+    }
   }
 
   makePresence(
@@ -340,7 +353,8 @@ export class Socket extends EventEmitter {
     }
 
     const ws = this.socket = new BaseSocket(this.url.href);
-    this.emit('socket', ws);
+    this.setState(SocketStates.CONNECTING);
+    this.emit(SocketEvents.SOCKET, ws);
     ws.socket.onclose = this.onClose.bind(this, ws);
     ws.socket.onerror = this.onError.bind(this, ws);
     ws.socket.onmessage = this.onMessage.bind(this, ws);
@@ -368,7 +382,7 @@ export class Socket extends EventEmitter {
         case EncodingTypes.JSON: return JSON.parse(data);
       }
     } catch(error) {
-      this.emit('warn', error);
+      this.emit(SocketEvents.WARN, error);
     }
   }
 
@@ -401,7 +415,7 @@ export class Socket extends EventEmitter {
       }
       this.sequence = newSequence;
     }
-    this.emit('packet', packet);
+    this.emit(SocketEvents.PACKET, packet);
 
     switch (packet.op) {
       case GatewayOpCodes.HEARTBEAT: {
@@ -446,13 +460,15 @@ export class Socket extends EventEmitter {
         this.discordTrace = data['_trace'];
         this.sessionId = data['session_id'];
         this.userId = data['user']['id'];
-        this.emit('ready');
+        this.setState(SocketStates.READY);
+        this.emit(SocketEvents.READY);
       }; break;
       case GatewayDispatchEvents.RESUMED: {
         this.reconnects = 0;
         this.resuming = false;
         this.bucket.unlock();
-        this.emit('resumed');
+        this.setState(SocketStates.READY);
+        this.emit(SocketEvents.READY);
       }; break;
       case GatewayDispatchEvents.GUILD_DELETE: {
         const serverId = <string> data['id'];
@@ -502,7 +518,7 @@ export class Socket extends EventEmitter {
       for (let [serverId, socket] of this.mediaGateways) {
         socket.kill();
       }
-      this.emit('killed');
+      this.emit(SocketEvents.KILLED);
     }
   }
 
@@ -514,8 +530,9 @@ export class Socket extends EventEmitter {
     if (!reason && (code in SocketInternalCloseReasons)) {
       reason = <string> SocketInternalCloseReasons[code];
     }
-    this.emit('close', {code, reason});
+    this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
+      this.setState(SocketStates.CLOSED);
       this.disconnect(code, reason);
       if (this.autoReconnect && !this.killed) {
         if (this.reconnectMax < this.reconnects) {
@@ -534,7 +551,7 @@ export class Socket extends EventEmitter {
     target: BaseSocket,
     event: {error: any} | any,
   ) {
-    this.emit('warn', event.error);
+    this.emit(SocketEvents.WARN, event.error);
   }
 
   onMessage(
@@ -550,8 +567,9 @@ export class Socket extends EventEmitter {
   }
 
   onOpen(target: BaseSocket) {
-    this.emit('open', target);
+    this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
+      this.setState(SocketStates.OPEN);
       if (this.sessionId) {
         this.resume();
       } else {
@@ -587,14 +605,14 @@ export class Socket extends EventEmitter {
         };
       }
     } catch(error) {
-      this.emit('warn', error);
+      this.emit(SocketEvents.WARN, error);
     }
     if (data !== undefined) {
       if (direct) {
         if (this.connected) {
           (<BaseSocket> this.socket).send(data, callback);
         } else {
-          this.emit('warn', new DroppedPacketError(packet, 'Socket isn\'t connected'));
+          this.emit(SocketEvents.WARN, new DroppedPacketError(packet, 'Socket isn\'t connected'));
         }
       } else {
         const throttled = () => {
@@ -607,7 +625,7 @@ export class Socket extends EventEmitter {
             try {
               (<BaseSocket> this.socket).send(data, callback);
             } catch(error) {
-              this.emit('warn', error);
+              this.emit(SocketEvents.WARN, error);
             }
           }
         }
@@ -649,13 +667,17 @@ export class Socket extends EventEmitter {
 
   identify(): void {
     const data = this.getIdentifyData();
-    this.send(GatewayOpCodes.IDENTIFY, data, undefined, true);
+    this.send(GatewayOpCodes.IDENTIFY, data, () => {
+      this.setState(SocketStates.IDENTIFYING);
+    }, true);
   }
 
   resume(): void {
     this.resuming = true;
     const data = this.getResumeData();
-    this.send(GatewayOpCodes.RESUME, data, undefined, true);
+    this.send(GatewayOpCodes.RESUME, data, () => {
+      this.setState(SocketStates.RESUMING);
+    }, true);
   }
 
   /* user callable function */

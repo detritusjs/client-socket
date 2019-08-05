@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.10',
+  VERSION: '0.2.11',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -254,6 +254,30 @@ export const MediaSSRCTypes = Object.freeze({
   VIDEO: 'video',
 });
 
+export const SocketEvents = Object.freeze({
+  CLOSE: 'close',
+  KILLED: 'killed',
+  OPEN: 'open',
+  PACKET: 'packet',
+  READY: 'ready',
+  SOCKET: 'socket',
+  STATE: 'state',
+  TRANSPORT: 'transport',
+  TRANSPORT_READY: 'transportReady',
+  WARN: 'warn',
+});
+
+export const SocketEventsBase = Object.freeze({
+  CLOSE: 'close',
+  ERROR: 'error',
+  MESSAGE: 'message',
+  OPEN: 'open',
+  PING: 'ping',
+  PONG: 'pong',
+  UNEXPECTED_RESPONSE: 'unexpected-response',
+  UPGRADE: 'upgrade',
+});
+
 export const SocketCloseCodes = Object.freeze({
   NORMAL: 1000,
   GOING_AWAY: 1001,
@@ -323,8 +347,13 @@ export const SocketMediaCloseCodes = Object.freeze({
 export const SocketStates = normalize({
   CLOSED: null,
   CONNECTING: null,
-  CONNECTED: null,
+  IDENTIFYING: null,
+  OPEN: null,
+  READY: null,
+  RESUMING: null,
 });
+
+export const SOCKET_STATES = Object.freeze(Object.values(SocketStates));
 
 export const RTP_HEADER_VERSION = 0x80;
 

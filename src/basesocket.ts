@@ -1,21 +1,13 @@
 import EventEmitter from './eventemitter';
-import { SocketCloseCodes } from './constants';
+import {
+  SocketCloseCodes,
+  SocketEventsBase,
+} from './constants';
 
 export const DependencyTypes = Object.freeze({
   UWS: 'uws',
   WS: 'ws',
 });
-
-export const WebsocketEvents = {
-  CLOSE: 'close',
-  ERROR: 'error',
-  MESSAGE: 'message',
-  OPEN: 'open',
-  PING: 'ping',
-  PONG: 'pong',
-  UNEXPECTED_RESPONSE: 'unexpected-response',
-  UPGRADE: 'upgrade',
-};
 
 export const WebsocketDependency: {
   module: any,
@@ -64,7 +56,7 @@ export class BaseSocket extends EventEmitter {
       }
     });
 
-    for (let event of Object.values(WebsocketEvents)) {
+    for (let event of Object.values(SocketEventsBase)) {
       this.socket.on(event, this.emit.bind(this, event));
     }
   }

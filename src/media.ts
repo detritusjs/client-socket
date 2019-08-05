@@ -7,11 +7,14 @@ import {
   MediaSpeakingFlags,
   MediaSSRCTypes,
   SocketCloseCodes,
+  SocketEvents,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
   SocketMediaCloseCodes,
+  SocketStates,
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
+  SOCKET_STATES,
 } from './constants';
 import EventEmitter from './eventemitter';
 import { Socket as GatewaySocket } from './gateway';
@@ -36,6 +39,8 @@ const defaultOptions = {
 };
 
 export class Socket extends EventEmitter {
+  readonly state: string = SocketStates.CLOSED;
+
   _heartbeat: {
     ack: boolean,
     lastAck: null | number,
@@ -99,15 +104,16 @@ export class Socket extends EventEmitter {
     }
   
     Object.defineProperties(this, {
+      _heartbeat: {enumerable: false, writable: false},
       channelId: {configurable: true, writable: false},
       gateway: {enumerable: false, writable: false},
       killed: {configurable: true, writable: false},
       protocol: {configurable: true, writable: false},
       ready: {configurable: true, writable: false},
       serverId: {writable: false},
+      state: {configurable: true, writable: false},
       token: {configurable: true, writable: false},
       userId: {writable: false},
-      _heartbeat: {enumerable: false, writable: false},
     });
     this.setProtocol(MediaProtocols.UDP);
   }
@@ -192,6 +198,13 @@ export class Socket extends EventEmitter {
     Object.defineProperty(this, 'protocol', {value});
   }
 
+  setState(value: string): void {
+    if (SOCKET_STATES.includes(value) && value !== this.state) {
+      Object.defineProperty(this, 'state', {value});
+      this.emit(SocketEvents.STATE, {state: value});
+    }
+  }
+
   setToken(value: string): void {
     Object.defineProperty(this, 'token', {value});
     if (!this.identified) {
@@ -238,13 +251,12 @@ export class Socket extends EventEmitter {
     this.ssrcs[MediaSSRCTypes.AUDIO].clear();
     this.ssrcs[MediaSSRCTypes.VIDEO].clear();
 
-    // Normal Disconnected
-    // Voice Channel Kick/Deleted
-    // Voice Server Crashed
+    // unresumable events
+    // 1000 Normal Disconnected
+    // 4014 Voice Channel Kick/Deleted
     if (
       (code === SocketCloseCodes.NORMAL) ||
-      (code === SocketMediaCloseCodes.DISCONNECTED) ||
-      (code === SocketMediaCloseCodes.VOICE_SERVER_CRASHED)
+      (code === SocketMediaCloseCodes.DISCONNECTED)
     ) {
       this.identified = false;
     }
@@ -278,7 +290,8 @@ export class Socket extends EventEmitter {
     url.pathname = url.pathname || '/';
 
     const ws = this.socket = new BaseSocket(url.href);
-    this.emit('socket', ws);
+    this.setState(SocketStates.CONNECTING);
+    this.emit(SocketEvents.SOCKET, ws);
     ws.socket.onclose = this.onClose.bind(this, ws);
     ws.socket.onerror = this.onError.bind(this, ws);
     ws.socket.onmessage = this.onMessage.bind(this, ws);
@@ -289,7 +302,7 @@ export class Socket extends EventEmitter {
     try {
       return JSON.parse(data);
     } catch(error) {
-      this.emit('warn', error);
+      this.emit(SocketEvents.WARN, error);
     }
   }
 
@@ -311,7 +324,7 @@ export class Socket extends EventEmitter {
     try {
       return JSON.stringify(data);
     } catch(error) {
-      this.emit('warn', error);
+      this.emit(SocketEvents.WARN, error);
     }
     return null;
   }
@@ -319,7 +332,7 @@ export class Socket extends EventEmitter {
   handle(data: any): void {
     const packet = this.decode(data);
     if (!packet) {return;}
-    this.emit('packet', packet);
+    this.emit(SocketEvents.PACKET, packet);
 
     switch (packet.op) {
       case MediaOpCodes.READY: {
@@ -328,7 +341,15 @@ export class Socket extends EventEmitter {
         this.identified = true;
         this.bucket.unlock();
         this.transportConnect(packet.d);
-        this.emit('ready');
+        this.setState(SocketStates.READY);
+        this.emit(SocketEvents.READY);
+      }; break;
+      case MediaOpCodes.RESUMED: {
+        this.reconnects = 0;
+        Object.defineProperty(this, 'ready', {value: true});
+        this.bucket.unlock();
+        this.setState(SocketStates.READY);
+        this.emit(SocketEvents.READY);
       }; break;
       case MediaOpCodes.CLIENT_CONNECT: {
         this.ssrcs[MediaSSRCTypes.AUDIO].set(packet.d.audio_ssrc, packet.d.user_id);
@@ -359,11 +380,6 @@ export class Socket extends EventEmitter {
         this._heartbeat.lastAck = Date.now();
         this._heartbeat.ack = true;
       }; break;
-      case MediaOpCodes.RESUMED: {
-        this.reconnects = 0;
-        Object.defineProperty(this, 'ready', {value: true});
-        this.bucket.unlock();
-      }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
         if (this.protocol === MediaProtocols.UDP) {
           const packetData: {
@@ -379,7 +395,7 @@ export class Socket extends EventEmitter {
             .setKey(packetData.secret_key)
             .setMode(packetData.mode)
             .setTransportId(packetData.media_session_id);
-          this.emit('transportReady', this.transport);
+          this.emit(SocketEvents.TRANSPORT_READY, this.transport);
         } else if (this.protocol === MediaProtocols.WEBRTC) {
           const data: {
             audio_codec: string,
@@ -427,7 +443,7 @@ export class Socket extends EventEmitter {
       this.transport = null;
     }
     this.resolvePromises(error || new Error('Media Gateway was killed.'));
-    this.emit('killed');
+    this.emit(SocketEvents.KILLED);
   }
 
   onClose(
@@ -438,8 +454,9 @@ export class Socket extends EventEmitter {
     if (!reason && (code in SocketInternalCloseReasons)) {
       reason = <string> SocketInternalCloseReasons[code];
     }
-    this.emit('close', {code, reason});
+    this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
+      this.setState(SocketStates.CLOSED);
       this.cleanup(code);
       if (this.gateway.autoReconnect && !this.killed) {
         if (this.gateway.reconnectMax < this.reconnects) {
@@ -458,7 +475,7 @@ export class Socket extends EventEmitter {
     target: BaseSocket,
     event: {error: any} | any,
   ) {
-    this.emit('warn', event.error);
+    this.emit(SocketEvents.WARN, event.error);
   }
 
   onMessage(
@@ -474,8 +491,9 @@ export class Socket extends EventEmitter {
   }
 
   onOpen(target: BaseSocket) {
-    this.emit('open');
+    this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
+      this.setState(SocketStates.OPEN);
       if (this.identified && this.transport) {
         this.resume();
       } else {
@@ -522,7 +540,7 @@ export class Socket extends EventEmitter {
         try {
           (<BaseSocket> this.socket).send(data, callback);
         } catch(error) {
-          this.emit('warn', error);
+          this.emit(SocketEvents.WARN, error);
         }
       };
       this.bucket.add(throttled);
@@ -563,22 +581,26 @@ export class Socket extends EventEmitter {
     );
   }
 
-  identify(callback?: Function): void {
+  identify(): void {
     this.send(MediaOpCodes.IDENTIFY, {
       server_id: this.serverId,
       session_id: this.sessionId,
       token: this.token,
       user_id: this.userId,
       video: this.videoEnabled,
-    }, callback, true);
+    }, () => {
+      this.setState(SocketStates.IDENTIFYING);
+    }, true);
   }
 
-  resume(callback?: Function): void {
+  resume(): void {
     this.send(MediaOpCodes.RESUME, {
       server_id: this.serverId,
       session_id: this.sessionId,
       token: this.token,
-    }, callback, true);
+    }, () => {
+      this.setState(SocketStates.RESUMING);
+    }, true);
   }
 
   transportConnect(
@@ -598,7 +620,7 @@ export class Socket extends EventEmitter {
       if (this.protocol === MediaProtocols.UDP) {
         this.transport = new MediaUDPSocket(this);
       } else {
-        this.emit('warn', new Error(`Unsupported Media Transport Protocol: ${this.protocol}`));
+        this.emit(SocketEvents.WARN, new Error(`Unsupported Media Transport Protocol: ${this.protocol}`));
         return;
       }
     } else {
@@ -622,14 +644,14 @@ export class Socket extends EventEmitter {
         (<MediaUDPSocket> this.transport).setMode(mode);
         (<MediaUDPSocket> this.transport).setSSRC(data.ssrc);
         (<MediaUDPSocket> this.transport).connect(data.ip, data.port);
-        this.emit('transport', this.transport);
+        this.emit(SocketEvents.TRANSPORT, this.transport);
       } else {
         (<MediaUDPSocket> this.transport).disconnect();
         this.transport = null;
-        this.emit('warn', new Error(`No supported voice mode found in ${JSON.stringify(data.modes)}`));
+        this.emit(SocketEvents.WARN, new Error(`No supported voice mode found in ${JSON.stringify(data.modes)}`));
       }
     } else {
-      this.emit('warn', new Error(`Unsupported Media Transport Protocol: ${this.protocol}`));
+      this.emit(SocketEvents.WARN, new Error(`Unsupported Media Transport Protocol: ${this.protocol}`));
     }
   }
 
