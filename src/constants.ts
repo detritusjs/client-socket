@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.11',
+  VERSION: '0.2.12',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -30,6 +30,14 @@ export const EncodingTypes = Object.freeze({
   JSON: 'json',
 });
 
+export const GatewayActivityActionTypes = Object.freeze({
+  JOIN: 1,
+  SPECTATE: 2,
+  LISTEN: 3,
+  WATCH: 4,
+  JOIN_REQUEST: 5,
+});
+
 export const GatewayActivityFlags = Object.freeze({
   INSTANCE:     1 << 0,
   JOIN:         1 << 1,
@@ -39,12 +47,12 @@ export const GatewayActivityFlags = Object.freeze({
   PLAY:         1 << 5,
 });
 
-export const GatewayActivityActionTypes = Object.freeze({
-  JOIN: 1,
-  SPECTATE: 2,
-  LISTEN: 3,
-  WATCH: 4,
-  JOIN_REQUEST: 5,
+export const GatewayActivityTypes = Object.freeze({
+  PLAYING: 0,
+  STREAMING: 1,
+  LISTENING: 2,
+  WATCHING: 3,
+  CUSTOM_STATUS: 4,
 });
 
 export const GatewayDispatchEvents = normalize({
@@ -163,14 +171,6 @@ export const GatewayPresenceStatuses = Object.freeze({
   IDLE: 'idle',
   INVISIBLE: 'invisible',
   OFFLINE: 'offline',
-});
-
-export const GatewayPresenceTypes = Object.freeze({
-  PLAYING: 0,
-  STREAMING: 1,
-  LISTENING: 2,
-  WATCHING: 3,
-  CUSTOM_STATUS: 4,
 });
 
 export const MaxNumbers = Object.freeze({
