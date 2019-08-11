@@ -3,12 +3,13 @@ const {
   Gateway,
 } = require('../lib');
 
+
 const token = '';
 const client = new Gateway.Socket(token, {
   presence: {
     activity: {
       name: 'something cool',
-      type: Constants.GatewayPresenceTypes.WATCHING,
+      type: Constants.GatewayActivityTypes.WATCHING,
     },
     status: Constants.GatewayPresenceStatuses.DND,
   },

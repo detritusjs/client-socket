@@ -3,6 +3,7 @@ const {
   Gateway,
 } = require('../lib');
 
+
 const guildId = '';
 const channelId = '';
 const repeatUserId = '';
@@ -14,7 +15,7 @@ const client = new Gateway.Socket(token, {
   presence: {
     activity: {
       name: `user ${repeatUserId}`,
-      type: Constants.GatewayPresenceTypes.LISTENING,
+      type: Constants.GatewayActivityTypes.LISTENING,
     },
     status: Constants.GatewayPresenceStatuses.DND,
   },
