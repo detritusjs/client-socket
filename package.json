@@ -1,6 +1,6 @@
 {
   "name": "detritus-client-socket",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "a nodejs library to interact with discord's websocket gateway",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -8,6 +8,7 @@
     "lib/**/*"
   ],
   "dependencies": {
+    "detritus-utils": "^0.1.0",
     "ws": "^7.1.0"
   },
   "devDependencies": {
@@ -15,7 +16,6 @@
   },
   "peerDependencies": {
     "erlpack": "^0.1.2",
-    "eventemitter3": "^4.0.0",
     "pako": "^1.0.10",
     "sodium-native": "^2.4.2",
     "tweetnacl": "^1.0.1",

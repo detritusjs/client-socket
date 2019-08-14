@@ -1,5 +1,6 @@
+import { EventEmitter } from 'detritus-utils';
+
 import { InflateError } from './errors';
-import EventEmitter from './eventemitter';
 
 const DependencyTypes = Object.freeze({
   PAKO: 'pako',

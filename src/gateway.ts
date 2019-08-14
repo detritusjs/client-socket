@@ -1,11 +1,12 @@
 import * as os from 'os';
 import { URL } from 'url';
 
+import { EventEmitter } from 'detritus-utils';
+
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
 import { Decompressor } from './decompressor';
 import { DroppedPacketError } from './errors';
-import EventEmitter from './eventemitter';
 import { Socket as MediaSocket } from './media';
 
 import {

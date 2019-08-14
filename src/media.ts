@@ -1,3 +1,5 @@
+import { EventEmitter } from 'detritus-utils';
+
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
 import {
@@ -16,7 +18,6 @@ import {
   MEDIA_PROTOCOLS,
   SOCKET_STATES,
 } from './constants';
-import EventEmitter from './eventemitter';
 import { Socket as GatewaySocket } from './gateway';
 import { Socket as MediaUDPSocket } from './mediaudp';
 

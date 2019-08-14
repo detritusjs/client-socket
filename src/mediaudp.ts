@@ -1,5 +1,7 @@
 import * as dgram from 'dgram';
 
+import { EventEmitter } from 'detritus-utils';
+
 import {
   MediaCodecs,
   MediaCodecTypes,
@@ -19,7 +21,6 @@ import {
   MediaPacketError,
   MediaRTPError,
 } from './errors';
-import EventEmitter from './eventemitter';
 import { Socket as MediaSocket } from './media';
 import {
   isValidRTPHeader,

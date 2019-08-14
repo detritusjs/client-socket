@@ -1,4 +1,5 @@
-import EventEmitter from './eventemitter';
+import { EventEmitter } from 'detritus-utils';
+
 import {
   SocketCloseCodes,
   SocketEventsBase,
