@@ -1,7 +1,7 @@
 import * as os from 'os';
 import { URL } from 'url';
 
-import { EventEmitter } from 'detritus-utils';
+import { EventEmitter, Timers } from 'detritus-utils';
 
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
@@ -903,26 +903,21 @@ export class Socket extends EventEmitter {
       this.mediaGateways.set(serverId, gateway);
     }
 
-    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Timers.Timeout();
     if (options.timeout) {
-      timeout = setTimeout(() => {
+      timeout.start(options.timeout, () => {
         gateway.kill(new Error(`Voice Gateway took longer than ${options.timeout}ms.`));
-        timeout = null;
-      }, options.timeout);
+      });
     }
 
     return new Promise((resolve, reject) => {
       gateway.promises.add({resolve, reject});
       this.voiceStateUpdate(guildId, channelId, options);
     }).then(() => {
-      if (timeout !== null) {
-        clearTimeout(timeout);
-      }
+      timeout.stop();
       return (channelId) ? gateway : null;
     }).catch((error) => {
-      if (timeout !== null) {
-        clearTimeout(timeout);
-      }
+      timeout.stop();
       throw error;
     });
   }
