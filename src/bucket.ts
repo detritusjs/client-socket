@@ -25,6 +25,10 @@ export class Bucket {
       amount: 0,
       reset: 0,
     };
+
+    Object.defineProperties(this, {
+      timeout: {enumerable: false},
+    });
   }
 
   add(

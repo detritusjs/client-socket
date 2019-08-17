@@ -1,4 +1,4 @@
-import { EventEmitter } from 'detritus-utils';
+import { BaseCollection, EventEmitter, Timers } from 'detritus-utils';
 
 import {
   SocketCloseCodes,
@@ -33,16 +33,16 @@ if (WebsocketDependency.module === null) {
 }
 
 export class BaseSocket extends EventEmitter {
-  socket: any;
-  pings: Map<string, {
+  readonly pings = new BaseCollection<string, {
     reject: Function,
     resolve: Function,
-  }>;
+  }>();
+
+  socket: any;
 
   constructor(url: string) {
     super();
     this.socket = new WebsocketDependency.module(url);
-    this.pings = new Map();
 
     this.socket.on('pong', (data: any) => {
       try {
@@ -97,7 +97,7 @@ export class BaseSocket extends EventEmitter {
   ): void {
     if (this.connected) {
       this.socket.close(code, reason);
-      for (let {reject} of this.pings.values()) {
+      for (const {reject} of this.pings.values()) {
         reject(new Error('Socket has closed.'));
       }
       this.pings.clear();
@@ -106,19 +106,20 @@ export class BaseSocket extends EventEmitter {
 
   async ping(
     timeout: number = 1000,
-  ): Promise<any> {
+  ): Promise<number> {
     if (!this.connected) {
       throw new Error('Socket isn\'t connected.');
     }
     const nonce = `${Date.now()}.${Math.random().toString(36)}`;
     return new Promise((resolve, reject) => {
-      let expire: ReturnType<typeof setTimeout>;
+      const expire = new Timers.Timeout();
       if (timeout) {
-        expire = setTimeout(() => {
+        expire.start(timeout, () => {
           this.pings.delete(nonce);
           reject(new Error(`Pong took longer than ${timeout}ms.`));
-        }, timeout);
+        });
       }
+
       const now = Date.now();
       new Promise((res, rej) => {
         this.pings.set(nonce, {
@@ -127,9 +128,7 @@ export class BaseSocket extends EventEmitter {
         });
         this.socket.ping(JSON.stringify({nonce}));
       }).then(() => {
-        if (expire !== undefined) {
-          clearTimeout(<number> <unknown> expire);
-        }
+        expire.stop();
         resolve(Math.round(Date.now() - now));
       });
     });

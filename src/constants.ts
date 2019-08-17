@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.15',
+  VERSION: '0.2.16',
 });
 
 function normalize(object: {[key: string]: any}) {
