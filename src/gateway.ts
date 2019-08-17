@@ -1,7 +1,7 @@
 import * as os from 'os';
 import { URL } from 'url';
 
-import { EventEmitter, Timers } from 'detritus-utils';
+import { EventEmitter, BaseCollection, Timers } from 'detritus-utils';
 
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
@@ -56,7 +56,7 @@ const defaultOptions = Object.freeze({
   reconnectDelay: 5000,
   reconnectMax: 5,
   shardCount: 1,
-  shardId: 0
+  shardId: 0,
 });
 
 const defaultPresence = Object.freeze({
@@ -91,7 +91,7 @@ export class Socket extends EventEmitter {
   guildSubscriptions: boolean;
   killed: boolean = false;
   largeThreshold: number;
-  mediaGateways = new Map<string, MediaSocket>();
+  mediaGateways = new BaseCollection<string, MediaSocket>();
   presence: PresenceOptions;
   reconnectDelay: number;
   reconnectMax: number;

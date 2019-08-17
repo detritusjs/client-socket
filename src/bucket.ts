@@ -1,6 +1,9 @@
+import { Timers } from 'detritus-utils';
 
 
 export class Bucket {
+  readonly timeout = new Timers.Timeout();
+
   delay: number;
   limit: number;
   locked: boolean;
@@ -9,7 +12,6 @@ export class Bucket {
     amount: number,
     reset: number,
   };
-  unlockTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     limit: number = 0,
@@ -23,11 +25,6 @@ export class Bucket {
       amount: 0,
       reset: 0,
     };
-    this.unlockTimer = undefined;
-  }
-
-  get hasUnlockTimer(): boolean {
-    return this.unlockTimer !== undefined;
   }
 
   add(
@@ -46,18 +43,14 @@ export class Bucket {
     this.queue.length = 0;
   }
 
-  lock(
-    unlockIn: number = 0,
-  ): void {
-    if (this.locked && this.hasUnlockTimer) {
-      clearTimeout(<number> <unknown> this.unlockTimer);
-      this.unlockTimer = undefined;
-    }
+  lock(unlockIn: number = 0): void {
+    this.timeout.stop();
+
     this.locked = true;
     if (unlockIn) {
-      this.unlockTimer = setTimeout(() => {
+      this.timeout.start(unlockIn, () => {
         this.unlock();
-      }, unlockIn);
+      });
     }
   }
 
