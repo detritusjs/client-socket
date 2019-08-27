@@ -23,6 +23,8 @@ import {
   SocketInternalCloseReasons,
   SocketStates,
   DEFAULT_SHARD_COUNT,
+  DEFAULT_SHARD_LAUNCH_DELAY,
+  DEFAULT_VOICE_TIMEOUT,
   SOCKET_STATES,
   ZLIB_SUFFIX,
 } from './constants';
@@ -44,8 +46,6 @@ const IdentifyProperties = Object.freeze({
   '$device': `Detritus v${Package.VERSION}`,
 });
 
-const DEFAULT_VOICE_TIMEOUT = 30000;
-
 const defaultOptions = Object.freeze({
   autoReconnect: true,
   compress: CompressTypes.ZLIB,
@@ -53,7 +53,7 @@ const defaultOptions = Object.freeze({
   guildSubscriptions: true,
   largeThreshold: 250,
   presence: null,
-  reconnectDelay: 5000,
+  reconnectDelay: DEFAULT_SHARD_LAUNCH_DELAY,
   reconnectMax: 5,
   shardCount: 1,
   shardId: 0,
@@ -64,6 +64,21 @@ const defaultPresence = Object.freeze({
   since: null,
   status: GatewayPresenceStatuses.ONLINE,
 });
+
+export interface SocketOptions {
+  autoReconnect?: boolean,
+  compress?: boolean | string,
+  disabledEvents?: Array<string>,
+  encoding?: string,
+  guildSubscriptions?: boolean,
+  identifyProperties?: IdentifyDataProperties,
+  largeThreshold?: number,
+  presence?: any,
+  reconnectDelay?: number,
+  reconnectMax?: number,
+  shardCount?: number,
+  shardId?: number,
+}
 
 export class Socket extends EventEmitter {
   readonly state: string = SocketStates.CLOSED;
@@ -89,6 +104,7 @@ export class Socket extends EventEmitter {
   decompressor: Decompressor | null;
   encoding: string;
   guildSubscriptions: boolean;
+  identifyProperties: IdentifyDataProperties = {};
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
@@ -138,7 +154,7 @@ export class Socket extends EventEmitter {
     this.shardId = <number> options.shardId;
     this.token = token;
 
-    Object.defineProperty(this, 'token', {enumerable: false, writable: false});
+    Object.assign(this.identifyProperties, options.identifyProperties || IdentifyProperties);
 
     if (
       (this.compress !== CompressTypes.NONE) &&
@@ -174,8 +190,10 @@ export class Socket extends EventEmitter {
 
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
+      identifyProperties: {enumerable: false},
       killed: {configurable: true},
       state: {configurable: true, writable: false},
+      token: {enumerable: false, writable: false},
     });
   }
 
@@ -232,7 +250,7 @@ export class Socket extends EventEmitter {
     }
     if (data.activities) {
       data.activities = data.activities.map((activity) => {
-        const data: any = {
+        const raw: any = {
           application_id: activity.applicationId,
           assets: activity.assets,
           created_at: activity.createdAt,
@@ -250,7 +268,7 @@ export class Socket extends EventEmitter {
           url: activity.url,
         };
         if (activity.assets) {
-          data.assets = {
+          raw.assets = {
             large_image: activity.assets.largeImage,
             large_text: activity.assets.largeText,
             small_image: activity.assets.smallImage,
@@ -258,24 +276,25 @@ export class Socket extends EventEmitter {
           };
         }
         if (activity.party) {
-          data.party = {
+          raw.party = {
             id: activity.party.id,
             size: activity.party.size,
           };
         }
         if (activity.secrets) {
-          data.secrets = {
-            id: data.secrets.id,
-            size: data.secrets.size,
+          raw.secrets = {
+            join: activity.secrets.join,
+            match: activity.secrets.match,
+            spectate: activity.secrets.spectate,
           };
         }
         if (activity.timestamps) {
-          data.timestamps = {
+          raw.timestamps = {
             end: activity.timestamps.end,
             start: activity.timestamps.start,
           };
         }
-        return data;
+        return raw;
       });
     }
     return data;
@@ -287,7 +306,7 @@ export class Socket extends EventEmitter {
       compress: (this.compress === CompressTypes.PAYLOAD),
       guild_subscriptions: this.guildSubscriptions,
       large_threshold: this.largeThreshold,
-      properties: IdentifyProperties,
+      properties: this.identifyProperties,
       token: this.token,
     };
     if (DEFAULT_SHARD_COUNT < this.shardCount) {
@@ -923,21 +942,7 @@ export class Socket extends EventEmitter {
   }
 }
 
-export interface SocketOptions {
-  autoReconnect?: boolean,
-  compress?: boolean | string,
-  disabledEvents?: Array<string>,
-  encoding?: string,
-  guildSubscriptions?: boolean,
-  largeThreshold?: number,
-  presence?: any,
-  reconnectDelay?: number,
-  reconnectMax?: number,
-  shardCount?: number,
-  shardId?: number,
-}
-
-interface PresenceActivity {
+export interface PresenceActivity {
   applicationId?: string,
   assets?: {
     largeImage?: string,
@@ -970,7 +975,7 @@ interface PresenceActivity {
   url?: string,
 }
 
-interface PresenceData {
+export interface PresenceData {
   activities?: Array<PresenceActivity>,
   afk: boolean,
   game?: PresenceActivity,
@@ -978,22 +983,40 @@ interface PresenceData {
   status: string,
 }
 
-interface PresenceOptions extends PresenceData {
+export interface PresenceOptions extends PresenceData {
   activity?: PresenceActivity,
   game?: PresenceActivity,
 }
 
-interface IdentifyData {
+export interface IdentifyData {
   compress: boolean,
   guild_subscriptions?: boolean,
   large_threshold: number,
   presence?: PresenceData,
-  properties: any,
+  properties: IdentifyDataProperties,
   shard?: Array<number>,
   token: string,
 }
 
-interface ResumeData {
+export interface IdentifyDataProperties {
+  $browser?: string,
+  $device?: string,
+  $os?: string,
+  os?: string,
+  browser?: string,
+  browser_user_agent?: string,
+  browser_version?: string,
+  client_build_number?: number,
+  client_event_source?: string,
+  client_version?: string,
+  distro?: string,
+  os_version?: string,
+  os_arch?: string,
+  release_channel?: string,
+  window_manager?: string,
+}
+
+export interface ResumeData {
   seq?: null | number,
   session_id: null | string,
   token: string,

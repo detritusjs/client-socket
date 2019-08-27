@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.16',
+  VERSION: '0.2.17',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -24,6 +24,8 @@ export const CompressTypes = Object.freeze({
 });
 
 export const DEFAULT_SHARD_COUNT = 0;
+export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
+export const DEFAULT_VOICE_TIMEOUT = 30000;
 
 export const EncodingTypes = Object.freeze({
   ETF: 'etf',
