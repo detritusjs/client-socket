@@ -41,9 +41,9 @@ try {
 } catch(e) {}
 
 const IdentifyProperties = Object.freeze({
-  '$os': `${os.type()} ${os.release()}; ${os.arch()}`,
   '$browser': process.version.replace(/^v/, (process.release.name || 'node') + '/'),
   '$device': `Detritus v${Package.VERSION}`,
+  '$os': `${os.type()} ${os.release()}; ${os.arch()}`,
 });
 
 const defaultOptions = Object.freeze({
@@ -104,7 +104,7 @@ export class Socket extends EventEmitter {
   decompressor: Decompressor | null;
   encoding: string;
   guildSubscriptions: boolean;
-  identifyProperties: IdentifyDataProperties = {};
+  identifyProperties: IdentifyDataProperties = Object.assign({}, IdentifyProperties);
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
@@ -154,7 +154,7 @@ export class Socket extends EventEmitter {
     this.shardId = <number> options.shardId;
     this.token = token;
 
-    Object.assign(this.identifyProperties, options.identifyProperties || IdentifyProperties);
+    Object.assign(this.identifyProperties, options.identifyProperties);
 
     if (
       (this.compress !== CompressTypes.NONE) &&
