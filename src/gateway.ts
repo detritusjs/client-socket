@@ -108,7 +108,7 @@ export class Socket extends EventEmitter {
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
-  presence: PresenceOptions;
+  presence: PresenceOptions | null = null;
   reconnectDelay: number;
   reconnectMax: number;
   reconnects: number = 0;
@@ -145,14 +145,15 @@ export class Socket extends EventEmitter {
     this.disabledEvents = <Array<string>> options.disabledEvents;
     this.guildSubscriptions = !!options.guildSubscriptions;
     this.largeThreshold = <number> options.largeThreshold;
-    this.presence = Object.assign({
-      activities: [],
-    }, defaultPresence, options.presence);
     this.reconnectDelay = <number> options.reconnectDelay;
     this.reconnectMax = <number> options.reconnectMax;
     this.shardCount = <number> options.shardCount;
     this.shardId = <number> options.shardId;
     this.token = token;
+
+    if (options.presence) {
+      this.presence = Object.assign({}, defaultPresence, options.presence);
+    }
 
     Object.assign(this.identifyProperties, options.identifyProperties);
 
@@ -227,7 +228,7 @@ export class Socket extends EventEmitter {
   makePresence(
     options?: PresenceOptions,
   ): PresenceData {
-    options = Object.assign({}, defaultPresence, this.presence, options);
+    options = this.presence = Object.assign({}, defaultPresence, this.presence, options);
     const activities: Array<PresenceActivity> = [...(options.activities || [])];
 
     const data: PresenceData = {
@@ -245,7 +246,6 @@ export class Socket extends EventEmitter {
       }
     }
 
-    // just to soothe typescript
     if (activities.length) {
       data.activities = [];
       for (let activity of activities) {
