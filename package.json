@@ -1,7 +1,7 @@
 {
   "name": "detritus-client-socket",
-  "version": "0.2.18",
-  "description": "A pure-Typescript library to interact with Discord's Gateway",
+  "version": "0.2.19",
+  "description": "A TypeScript NodeJS library to interact with Discord's Gateway",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
@@ -31,10 +31,11 @@
     "url": "git+https://github.com/detritusjs/client-socket.git"
   },
   "keywords": [
-    "nodejs",
     "discord",
     "gateway",
-    "library"
+    "library",
+    "nodejs",
+    "typescript"
   ],
   "author": "cakedan",
   "license": "MIT",

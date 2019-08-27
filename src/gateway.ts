@@ -227,29 +227,28 @@ export class Socket extends EventEmitter {
   makePresence(
     options?: PresenceOptions,
   ): PresenceData {
-    options = Object.assign({
-      activities: [],
-    }, defaultPresence, this.presence, options);
+    options = Object.assign({}, defaultPresence, this.presence, options);
+    const activities: Array<PresenceActivity> = [...(options.activities || [])];
 
     const data: PresenceData = {
-      activities: options.activities,
       afk: options.afk,
       since: options.since,
       status: options.status,
     };
+
     if (options.activity || options.game) {
-      if (!Array.isArray(data.activities)) {
-        data.activities = [];
-      }
       if (options.activity) {
-        data.activities.unshift(options.activity);
+        activities.unshift(options.activity);
       }
       if (options.game) {
-        data.activities.unshift(options.game);
+        activities.unshift(options.game);
       }
     }
-    if (data.activities) {
-      data.activities = data.activities.map((activity) => {
+
+    // just to soothe typescript
+    if (activities.length) {
+      data.activities = [];
+      for (let activity of activities) {
         const raw: any = {
           application_id: activity.applicationId,
           assets: activity.assets,
@@ -294,8 +293,8 @@ export class Socket extends EventEmitter {
             start: activity.timestamps.start,
           };
         }
-        return raw;
-      });
+        data.activities.push(raw);
+      }
     }
     return data;
   }
