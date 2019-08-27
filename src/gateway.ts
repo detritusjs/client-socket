@@ -41,9 +41,9 @@ try {
 } catch(e) {}
 
 const IdentifyProperties = Object.freeze({
-  '$browser': process.version.replace(/^v/, (process.release.name || 'node') + '/'),
-  '$device': `Detritus v${Package.VERSION}`,
-  '$os': `${os.type()} ${os.release()}; ${os.arch()}`,
+  $browser: process.version.replace(/^v/, (process.release.name || 'node') + '/'),
+  $device: `Detritus v${Package.VERSION}`,
+  $os: `${os.type()} ${os.release()}; ${os.arch()}`,
 });
 
 const defaultOptions = Object.freeze({
