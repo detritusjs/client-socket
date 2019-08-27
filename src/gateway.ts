@@ -55,7 +55,7 @@ const defaultOptions = Object.freeze({
   presence: null,
   reconnectDelay: DEFAULT_SHARD_LAUNCH_DELAY,
   reconnectMax: 5,
-  shardCount: 1,
+  shardCount: DEFAULT_SHARD_COUNT,
   shardId: 0,
 });
 
