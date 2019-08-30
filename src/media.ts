@@ -1,4 +1,4 @@
-import { EventEmitter } from 'detritus-utils';
+import { EventEmitter, Timers } from 'detritus-utils';
 
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
@@ -46,14 +46,14 @@ export class Socket extends EventEmitter {
     ack: boolean,
     lastAck: null | number,
     lastSent: null | number,
-    interval: null | ReturnType<typeof setInterval>,
+    interval: Timers.Interval,
     intervalTime: null | number,
     nonce: null | number,
   } = {
     ack: false,
     lastAck: null,
     lastSent: null,
-    interval: null,
+    interval: new Timers.Interval(),
     intervalTime: null,
     nonce: null,
   };
@@ -261,10 +261,7 @@ export class Socket extends EventEmitter {
     ) {
       this.identified = false;
     }
-    if (this._heartbeat.interval !== null) {
-      clearInterval(<number> <unknown> this._heartbeat.interval);
-      this._heartbeat.interval = null;
-    }
+    this._heartbeat.interval.stop();
     this._heartbeat.ack = false;
     this._heartbeat.lastAck = null;
     this._heartbeat.lastSent = null;
@@ -371,6 +368,11 @@ export class Socket extends EventEmitter {
       }; break;
       case MediaOpCodes.HELLO: {
         this.setHeartbeat(packet.d);
+        if (this.identified && this.transport) {
+          this.resume();
+        } else {
+          this.identify();
+        }
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
         if (packet.d !== this._heartbeat.nonce) {
@@ -378,8 +380,8 @@ export class Socket extends EventEmitter {
           this.connect();
           return;
         }
-        this._heartbeat.lastAck = Date.now();
         this._heartbeat.ack = true;
+        this._heartbeat.lastAck = Date.now();
       }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
         if (this.protocol === MediaProtocols.UDP) {
@@ -463,6 +465,7 @@ export class Socket extends EventEmitter {
         if (this.gateway.reconnectMax < this.reconnects) {
           this.kill();
         } else {
+          this.emit(SocketEvents.RECONNECTING);
           setTimeout(() => {
             this.connect();
             this.reconnects++;
@@ -495,11 +498,6 @@ export class Socket extends EventEmitter {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
       this.setState(SocketStates.OPEN);
-      if (this.identified && this.transport) {
-        this.resume();
-      } else {
-        this.identify();
-      }
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
     }
@@ -554,13 +552,12 @@ export class Socket extends EventEmitter {
     if (fromInterval && (this._heartbeat.lastSent && !this._heartbeat.ack)) {
       this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK);
       this.connect();
-      return;
-    }
-    this._heartbeat.nonce = Date.now();
-    this.send(MediaOpCodes.HEARTBEAT, this._heartbeat.nonce, () => {
+    } else {
       this._heartbeat.ack = false;
       this._heartbeat.lastSent = Date.now();
-    }, true);
+      this._heartbeat.nonce = Date.now();
+      this.send(MediaOpCodes.HEARTBEAT, this._heartbeat.nonce, undefined, true);
+    }
   }
 
   setHeartbeat(data: {
@@ -573,13 +570,9 @@ export class Socket extends EventEmitter {
     this._heartbeat.ack = true;
     this._heartbeat.lastAck = Date.now();
     this._heartbeat.intervalTime = data.heartbeat_interval;
-    if (this._heartbeat.interval !== null) {
-      clearInterval(<number> <unknown> this._heartbeat.interval);
-    }
-    this._heartbeat.interval = setInterval(
-      this.heartbeat.bind(this, true),
-      data.heartbeat_interval,
-    );
+    this._heartbeat.interval.start(this._heartbeat.intervalTime, () => {
+      this.heartbeat(true);
+    });
   }
 
   identify(): void {
@@ -732,4 +725,26 @@ export class Socket extends EventEmitter {
       callback,
     );
   }
+
+  on(event: string, listener: Function): this;
+  on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
+  on(event: 'killed', listener: () => any): this;
+  on(event: 'open', listener: (target: BaseSocket) => any): this;
+  on(event: 'packet', listener: (packet: MediaGatewayPacket) => any): this;
+  on(event: 'ready', listener: () => any): this;
+  on(event: 'socket', listener: (socket: BaseSocket) => any): this;
+  on(event: 'state', listener: ({state}: {state: string}) => any): this;
+  on(event: 'transport', listener: (transport: MediaUDPSocket) => any): this;
+  on(event: 'transportReady', listener: (transport: MediaUDPSocket) => any): this;
+  on(event: 'warn', listener: (error: Error) => any): this;
+  on(event: string, listener: Function): this {
+    super.on(event, listener);
+    return this;
+  }
+}
+
+
+export interface MediaGatewayPacket {
+  op: number,
+  d: any,
 }

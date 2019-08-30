@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.2.21',
+  VERSION: '0.2.22',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -259,9 +259,11 @@ export const MediaSSRCTypes = Object.freeze({
 export const SocketEvents = Object.freeze({
   CLOSE: 'close',
   KILLED: 'killed',
+  LOG: 'log',
   OPEN: 'open',
   PACKET: 'packet',
   READY: 'ready',
+  RECONNECTING: 'reconnecting',
   SOCKET: 'socket',
   STATE: 'state',
   TRANSPORT: 'transport',

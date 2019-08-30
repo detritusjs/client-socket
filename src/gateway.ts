@@ -87,13 +87,13 @@ export class Socket extends EventEmitter {
     ack: boolean,
     lastAck: null | number,
     lastSent: null | number,
-    interval: null | ReturnType<typeof setInterval>,
+    interval: Timers.Interval,
     intervalTime: null | number,
   } = {
     ack: false,
     lastAck: null,
     lastSent: null,
-    interval: null,
+    interval: new Timers.Interval(),
     intervalTime: null,
   };
   autoReconnect: boolean;
@@ -338,10 +338,7 @@ export class Socket extends EventEmitter {
       this.sequence = 0;
       this.sessionId = null;
     }
-    if (this._heartbeat.interval !== null) {
-      clearInterval(<number> <unknown> this._heartbeat.interval);
-      this._heartbeat.interval = null;
-    }
+    this._heartbeat.interval.stop();
     this._heartbeat.ack = false;
     this._heartbeat.lastAck = null;
     this._heartbeat.lastSent = null;
@@ -415,8 +412,8 @@ export class Socket extends EventEmitter {
         reason = <string> SocketInternalCloseReasons[code];
       }
       this.socket.close(code, reason);
+      this.socket = null;
     }
-    this.socket = null;
     this.resuming = false;
   }
 
@@ -434,7 +431,6 @@ export class Socket extends EventEmitter {
       }
       this.sequence = newSequence;
     }
-    this.emit(SocketEvents.PACKET, packet);
 
     switch (packet.op) {
       case GatewayOpCodes.HEARTBEAT: {
@@ -446,6 +442,11 @@ export class Socket extends EventEmitter {
       }; break;
       case GatewayOpCodes.HELLO: {
         this.setHeartbeat(packet.d);
+        if (this.sessionId) {
+          this.resume();
+        } else {
+          this.identify();
+        }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
         setTimeout(() => {
@@ -466,6 +467,10 @@ export class Socket extends EventEmitter {
         this.handleDispatch(packet.t, packet.d);
       }; break;
     }
+
+    setImmediate(() => {
+      this.emit(SocketEvents.PACKET, packet);
+    });
   }
 
   handleDispatch(
@@ -557,6 +562,7 @@ export class Socket extends EventEmitter {
         if (this.reconnectMax < this.reconnects) {
           this.kill();
         } else {
+          this.emit(SocketEvents.RECONNECTING);
           setTimeout(() => {
             this.connect();
             this.reconnects++;
@@ -589,11 +595,6 @@ export class Socket extends EventEmitter {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
       this.setState(SocketStates.OPEN);
-      if (this.sessionId) {
-        this.resume();
-      } else {
-        this.identify();
-      }
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
     }
@@ -658,11 +659,10 @@ export class Socket extends EventEmitter {
       this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK);
       this.connect();
     } else {
+      this._heartbeat.ack = false;
+      this._heartbeat.lastSent = Date.now();
       const sequence = (this.sequence) ? this.sequence : null;
-      this.send(GatewayOpCodes.HEARTBEAT, sequence, () => {
-        this._heartbeat.ack = false;
-        this._heartbeat.lastSent = Date.now();
-      }, true);
+      this.send(GatewayOpCodes.HEARTBEAT, sequence, undefined, true);
     }
   }
 
@@ -675,11 +675,9 @@ export class Socket extends EventEmitter {
       this._heartbeat.ack = true;
       this._heartbeat.lastAck = Date.now();
       this._heartbeat.intervalTime = data['heartbeat_interval'];
-      if (this._heartbeat.interval) {
-        clearInterval(<number> <unknown> this._heartbeat.interval);
-        this._heartbeat.interval = null;
-      }
-      this._heartbeat.interval = setInterval(this.heartbeat.bind(this, true), data.heartbeat_interval);
+      this._heartbeat.interval.start(this._heartbeat.intervalTime, () => {
+        this.heartbeat(true);
+      });
       this.discordTrace = data._trace;
     }
   }
@@ -939,6 +937,55 @@ export class Socket extends EventEmitter {
       throw error;
     });
   }
+
+  on(event: string, listener: Function): this;
+  on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
+  on(event: 'killed', listener: () => any): this;
+  on(event: 'open', listener: (target: BaseSocket) => any): this;
+  on(event: 'packet', listener: (packet: GatewayPacket) => any): this;
+  on(event: 'ready', listener: () => any): this;
+  on(event: 'socket', listener: (socket: BaseSocket) => any): this;
+  on(event: 'state', listener: ({state}: {state: string}) => any): this;
+  on(event: 'warn', listener: (error: Error) => any): this;
+  on(event: string, listener: Function): this {
+    super.on(event, listener);
+    return this;
+  }
+}
+
+export interface GatewayPacket {
+  d: any,
+  op: number,
+  s: number,
+  t: string,
+}
+
+export interface IdentifyData {
+  compress: boolean,
+  guild_subscriptions?: boolean,
+  large_threshold: number,
+  presence?: PresenceData,
+  properties: IdentifyDataProperties,
+  shard?: Array<number>,
+  token: string,
+}
+
+export interface IdentifyDataProperties {
+  $browser?: string,
+  $device?: string,
+  $os?: string,
+  os?: string,
+  browser?: string,
+  browser_user_agent?: string,
+  browser_version?: string,
+  client_build_number?: number,
+  client_event_source?: string,
+  client_version?: string,
+  distro?: string,
+  os_version?: string,
+  os_arch?: string,
+  release_channel?: string,
+  window_manager?: string,
 }
 
 export interface PresenceActivity {
@@ -985,34 +1032,6 @@ export interface PresenceData {
 export interface PresenceOptions extends PresenceData {
   activity?: PresenceActivity,
   game?: PresenceActivity,
-}
-
-export interface IdentifyData {
-  compress: boolean,
-  guild_subscriptions?: boolean,
-  large_threshold: number,
-  presence?: PresenceData,
-  properties: IdentifyDataProperties,
-  shard?: Array<number>,
-  token: string,
-}
-
-export interface IdentifyDataProperties {
-  $browser?: string,
-  $device?: string,
-  $os?: string,
-  os?: string,
-  browser?: string,
-  browser_user_agent?: string,
-  browser_version?: string,
-  client_build_number?: number,
-  client_event_source?: string,
-  client_version?: string,
-  distro?: string,
-  os_version?: string,
-  os_arch?: string,
-  release_channel?: string,
-  window_manager?: string,
 }
 
 export interface ResumeData {

@@ -11,6 +11,7 @@ import {
   RTPHeaderExtensionOneByte,
   RTPHeaderExtensionTwoByte,
   RTPPayloadTypes,
+  SocketEvents,
   MEDIA_CODECS_AUDIO,
   MEDIA_CODECS_VIDEO,
   MEDIA_ENCRYPTION_MODES,
@@ -196,7 +197,7 @@ export class Socket extends EventEmitter {
       return this;
     }
     if (!MEDIA_CODECS_AUDIO.includes(codec)) {
-      this.emit('warn', new Error(`Unsupported audio codec received: ${codec}`));
+      this.emit(SocketEvents.WARN, new Error(`Unsupported audio codec received: ${codec}`));
       this.mediaGateway.kill();
       return this;
     }
@@ -212,7 +213,7 @@ export class Socket extends EventEmitter {
       return this;
     }
     if (!MEDIA_CODECS_VIDEO.includes(codec)) {
-      this.emit('warn', new Error(`Unsupported video codec received: ${codec}`));
+      this.emit(SocketEvents.WARN, new Error(`Unsupported video codec received: ${codec}`));
       this.mediaGateway.kill();
       return this;
     }
@@ -272,10 +273,10 @@ export class Socket extends EventEmitter {
 
     const onPacket = this.onPacket.bind(this);
     const socket = this.socket = dgram.createSocket('udp4');
-    this.emit('socket', socket);
+    this.emit(SocketEvents.SOCKET, socket);
     socket.once('message', (packet: Buffer) => {
       if (this.ssrc !== packet.readUInt32LE(0)) {
-        this.emit('warn', new Error('SSRC mismatch in ip discovery packet'));
+        this.emit(SocketEvents.WARN, new Error('SSRC mismatch in ip discovery packet'));
         return;
       }
   
@@ -341,17 +342,17 @@ export class Socket extends EventEmitter {
       this.mediaGateway.sendClientConnect();
 
       socket.on('message', onPacket);
-      this.emit('ready');
+      this.emit(SocketEvents.READY);
     });
 
     socket.on('close', () => {
       this.connected = false;
       socket.removeListener('message', onPacket);
-      this.emit('close');
+      this.emit(SocketEvents.CLOSE);
     });
 
     socket.on('error', (error: any) => {
-      this.emit('warn', error);
+      this.emit(SocketEvents.WARN, error);
     });
 
     this.connected = true;
@@ -377,7 +378,7 @@ export class Socket extends EventEmitter {
   onPacket(packet: Buffer, from: UDPFrom): void {
     if (!this.receiveEnabled) {return;}
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
-      this.emit('warn', new MediaPacketError(
+      this.emit(SocketEvents.WARN, new MediaPacketError(
         'Received a packet from an unknown IP/Port',
         from,
         packet,
@@ -385,7 +386,7 @@ export class Socket extends EventEmitter {
       return;
     }
     if (!this.key) {
-      this.emit('warn', new MediaPacketError(
+      this.emit(SocketEvents.WARN, new MediaPacketError(
         'Received a packet before the Session Description',
         from,
         packet,
@@ -393,7 +394,7 @@ export class Socket extends EventEmitter {
       return;
     }
     if (packet.length <= 12) {
-      this.emit('warn', new MediaPacketError(
+      this.emit(SocketEvents.WARN, new MediaPacketError(
         'Received an rtp packet that\'s way too small to be valid',
         from,
         packet,
@@ -401,7 +402,7 @@ export class Socket extends EventEmitter {
       return;
     }
     if (!isValidRTPHeader(packet)) {
-      this.emit('warn', new MediaPacketError(
+      this.emit(SocketEvents.WARN, new MediaPacketError(
         'Invalid RTP Packet',
         from,
         packet,
@@ -426,7 +427,7 @@ export class Socket extends EventEmitter {
       }
       */
       if (!RTP_PAYLOAD_TYPES.includes(payloadType)) {
-        this.emit('warn', new MediaRTPError(
+        this.emit(SocketEvents.WARN, new MediaRTPError(
           'Unknown RTP Packet Payload Type',
           from,
           packet,
@@ -457,7 +458,7 @@ export class Socket extends EventEmitter {
       }
 
       if (format === MediaCodecTypes.VIDEO && !this.videoEnabled) {
-        this.emit('log', new MediaRTPError(
+        this.emit(SocketEvents.LOG, new MediaRTPError(
           'Dropping video packet due to video not being enabled',
           from,
           packet,
@@ -490,7 +491,7 @@ export class Socket extends EventEmitter {
           rtp.payload = packet.slice(12);
         }; break;
         default: {
-          this.emit('warn', new MediaRTPError(
+          this.emit(SocketEvents.WARN, new MediaRTPError(
             `${this.mode} is not supported for decoding.`,
             from,
             packet,
@@ -511,7 +512,7 @@ export class Socket extends EventEmitter {
         );
       }
       if (data === null) {
-        this.emit('warn', new MediaRTPError(
+        this.emit(SocketEvents.WARN, new MediaRTPError(
           'Packet failed to decrypt',
           from,
           packet,
@@ -566,7 +567,7 @@ export class Socket extends EventEmitter {
           // using two bytes, 0x10 and 0x00 instead
           // if appbits is all 0s, ignore, so rn ignore this packet
 
-          this.emit('log', new MediaRTPError(
+          this.emit(SocketEvents.LOG, new MediaRTPError(
             'Received Two Byte header with appbits being 0, ignoring',
             from,
             packet,
@@ -602,15 +603,14 @@ export class Socket extends EventEmitter {
         userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, format);
       }
 
-      const payload: TransportPacket = {
+      this.emit(SocketEvents.PACKET, (<TransportPacket> {
         codec,
         data,
         format,
         from,
         rtp,
         userId,
-      };
-      this.emit('packet', payload);
+      }));
     }
   }
 
@@ -627,7 +627,7 @@ export class Socket extends EventEmitter {
       <string> this.remote.ip,
       (error: any, bytes: number) => {
         if (error) {
-          this.emit('warn', error);
+          this.emit(SocketEvents.WARN, error);
         }
       },
     );
@@ -810,5 +810,19 @@ export class Socket extends EventEmitter {
       timestamp: 960,
       type: MediaCodecTypes.AUDIO,
     });
+  }
+
+  on(event: string, listener: Function): this;
+  on(event: 'close', listener: () => any): this;
+  on(event: 'killed', listener: () => any): this;
+  on(event: 'log', listener: (error: Error) => any): this;
+  on(event: 'open', listener: () => any): this;
+  on(event: 'packet', listener: (packet: TransportPacket) => any): this;
+  on(event: 'ready', listener: () => any): this;
+  on(event: 'socket', listener: (socket: dgram.Socket) => any): this;
+  on(event: 'warn', listener: (error: Error) => any): this;
+  on(event: string, listener: Function): this {
+    super.on(event, listener);
+    return this;
   }
 }
