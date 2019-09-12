@@ -961,9 +961,9 @@ export interface GatewayPacket {
 }
 
 export interface IdentifyData {
-  compress: boolean,
+  compress?: boolean,
   guild_subscriptions?: boolean,
-  large_threshold: number,
+  large_threshold?: number,
   presence?: PresenceData,
   properties: IdentifyDataProperties,
   shard?: Array<number>,
