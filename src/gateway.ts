@@ -19,6 +19,7 @@ import {
   Package,
   SocketCloseCodes,
   SocketEvents,
+  SocketGatewayCloseCodes,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
   SocketStates,
@@ -325,18 +326,23 @@ export class Socket extends EventEmitter {
     };
   }
 
-  cleanup(
-    code?: string | number,
-  ): void {
+  cleanup(code?: string | number, reason?: string): void {
     this.bucket.clear();
     this.bucket.lock();
     if (this.decompressor) {
       this.decompressor.reset();
     }
     // 1000 close code, un-resumable
-    if (code === SocketCloseCodes.NORMAL) {
-      this.sequence = 0;
-      this.sessionId = null;
+    switch (code) {
+      case SocketCloseCodes.NORMAL: {
+        this.sequence = 0;
+        this.sessionId = null;
+      }; break;
+      case SocketGatewayCloseCodes.AUTHENTICATION_FAILED:
+      case SocketGatewayCloseCodes.INVALID_SHARD:
+      case SocketGatewayCloseCodes.SHARDING_REQUIRED: {
+        this.kill(new Error(reason || `Socket closed with ${code}, killing.`));
+      }; break;
     }
     this._heartbeat.interval.stop();
     this._heartbeat.ack = false;
@@ -406,7 +412,7 @@ export class Socket extends EventEmitter {
     code: number = SocketCloseCodes.NORMAL,
     reason?: string,
   ): void {
-    this.cleanup(code);
+    this.cleanup(code, reason);
     if (this.socket) {
       if (!reason && (code in SocketInternalCloseReasons)) {
         reason = <string> SocketInternalCloseReasons[code];
@@ -535,14 +541,14 @@ export class Socket extends EventEmitter {
     }
   }
 
-  kill(): void {
+  kill(error?: Error): void {
     if (!this.killed) {
       Object.defineProperty(this, 'killed', {value: true});
       this.disconnect(SocketCloseCodes.NORMAL);
       for (let [serverId, socket] of this.mediaGateways) {
-        socket.kill();
+        socket.kill(error);
       }
-      this.emit(SocketEvents.KILLED);
+      this.emit(SocketEvents.KILLED, {error});
     }
   }
 
@@ -560,7 +566,7 @@ export class Socket extends EventEmitter {
       this.disconnect(code, reason);
       if (this.autoReconnect && !this.killed) {
         if (this.reconnectMax < this.reconnects) {
-          this.kill();
+          this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
           setTimeout(() => {
