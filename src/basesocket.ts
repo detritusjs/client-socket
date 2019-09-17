@@ -44,7 +44,7 @@ export class BaseSocket extends EventEmitter {
     super();
     this.socket = new WebsocketDependency.module(url);
 
-    this.socket.on('pong', (data: any) => {
+    this.socket.on(SocketEventsBase.PONG, (data: any) => {
       try {
         const {nonce} = JSON.parse(String(data));
         const ping = this.pings.get(nonce);
@@ -55,9 +55,13 @@ export class BaseSocket extends EventEmitter {
       } catch(e) {
         // malformed ping?
       }
+      this.emit(SocketEventsBase.PONG, data);
     });
 
     for (let event of Object.values(SocketEventsBase)) {
+      if (event === SocketEventsBase.PONG) {
+        continue;
+      }
       this.socket.on(event, this.emit.bind(this, event));
     }
   }
