@@ -135,10 +135,6 @@ export class Socket extends EventEmitter {
     return !!this.socket && this.socket.connecting;
   }
 
-  get initializing(): boolean {
-    return !this.socket;
-  }
-
   get guildId(): null | string {
     return (this.inDm) ? null : this.serverId;
   }

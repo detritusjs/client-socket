@@ -43,20 +43,7 @@ export class BaseSocket extends EventEmitter {
   constructor(url: string) {
     super();
     this.socket = new WebsocketDependency.module(url);
-
-    this.socket.on(SocketEventsBase.PONG, (data: any) => {
-      try {
-        const {nonce} = JSON.parse(String(data));
-        const ping = this.pings.get(nonce);
-        if (ping) {
-          ping.resolve();
-          this.pings.delete(nonce);
-        }
-      } catch(e) {
-        // malformed ping?
-      }
-      this.emit(SocketEventsBase.PONG, data);
-    });
+    this.socket.on(SocketEventsBase.PONG, this.onPong.bind(this));
 
     for (let event of Object.values(SocketEventsBase)) {
       if (event === SocketEventsBase.PONG) {
@@ -101,11 +88,27 @@ export class BaseSocket extends EventEmitter {
   ): void {
     if (this.connected) {
       this.socket.close(code, reason);
-      for (const {reject} of this.pings.values()) {
+      for (const [nonce, {reject}] of this.pings) {
         reject(new Error('Socket has closed.'));
+        this.pings.delete(nonce);
       }
       this.pings.clear();
+      this.removeAllListeners();
     }
+  }
+
+  onPong(data: any): void {
+    try {
+      const { nonce } = JSON.parse(String(data));
+      const ping = this.pings.get(nonce);
+      if (ping) {
+        ping.resolve();
+        this.pings.delete(nonce);
+      }
+    } catch(e) {
+      // malformed ping?
+    }
+    this.emit(SocketEventsBase.PONG, data);
   }
 
   async ping(

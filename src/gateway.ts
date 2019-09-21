@@ -215,10 +215,6 @@ export class Socket extends EventEmitter {
     return !!this.socket && this.socket.connecting;
   }
 
-  get initializing(): boolean {
-    return !this.socket;
-  }
-
   setState(value: string): void {
     if (SOCKET_STATES.includes(value) && value !== this.state) {
       Object.defineProperty(this, 'state', {value});
