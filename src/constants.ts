@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.3.0',
+  VERSION: '0.3.1',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -165,6 +165,7 @@ export const GatewayOpCodes = Object.freeze({
   STREAM_WATCH: 20,
   STREAM_PING: 21,
   STREAM_SET_PAUSED: 22,
+  FLUSH_LFG_SUBSCRIPTIONS: 23,
 });
 
 export const GatewayPresenceStatuses = Object.freeze({

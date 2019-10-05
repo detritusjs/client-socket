@@ -710,6 +710,15 @@ export class Socket extends EventEmitter {
     }, callback);
   }
 
+  flushLfgSubscriptions(
+    subscriptions: any,
+    callback?: Function,
+  ): void {
+    this.send(GatewayOpCodes.FLUSH_LFG_SUBSCRIPTIONS, {
+      subscriptions,
+    }, callback);
+  }
+
   guildStreamCreate(
     guildId: string,
     channelId: string,
