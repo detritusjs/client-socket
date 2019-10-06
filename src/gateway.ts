@@ -545,6 +545,7 @@ export class Socket extends EventEmitter {
         socket.kill(error);
       }
       this.emit(SocketEvents.KILLED, {error});
+      this.removeAllListeners();
     }
   }
 

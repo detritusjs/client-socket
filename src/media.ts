@@ -310,8 +310,8 @@ export class Socket extends EventEmitter {
         reason = <string> SocketInternalCloseReasons[code];
       }
       this.socket.close(code, reason);
+      this.socket = null;
     }
-    this.socket = null;
   }
 
   encode(data: any): null | string {
@@ -434,10 +434,12 @@ export class Socket extends EventEmitter {
     this.disconnect(SocketCloseCodes.NORMAL);
     if (this.transport) {
       this.transport.disconnect();
+      this.transport.removeAllListeners();
       this.transport = null;
     }
     this.resolvePromises(error || new Error('Media Gateway was killed.'));
     this.emit(SocketEvents.KILLED);
+    this.removeAllListeners();
   }
 
   onClose(

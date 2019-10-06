@@ -88,13 +88,14 @@ export class BaseSocket extends EventEmitter {
   ): void {
     if (this.connected) {
       this.socket.close(code, reason);
-      for (const [nonce, {reject}] of this.pings) {
-        reject(new Error('Socket has closed.'));
-        this.pings.delete(nonce);
-      }
-      this.pings.clear();
-      this.removeAllListeners();
     }
+    for (const [nonce, {reject}] of this.pings) {
+      reject(new Error('Socket has closed.'));
+      this.pings.delete(nonce);
+    }
+    this.pings.clear();
+    this.socket.removeAllListeners();
+    this.removeAllListeners();
   }
 
   onPong(data: any): void {
