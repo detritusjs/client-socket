@@ -378,35 +378,24 @@ export class Socket extends EventEmitter {
   onPacket(packet: Buffer, from: UDPFrom): void {
     if (!this.receiveEnabled) {return;}
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
-      this.emit(SocketEvents.WARN, new MediaPacketError(
-        'Received a packet from an unknown IP/Port',
-        from,
-        packet,
-      ));
+      const error = new MediaPacketError('Received a packet from an unknown IP/Port', from, packet);
+      this.emit(SocketEvents.WARN, error);
       return;
     }
     if (!this.key) {
-      this.emit(SocketEvents.WARN, new MediaPacketError(
-        'Received a packet before the Session Description',
-        from,
-        packet,
-      ));
+      const error = new MediaPacketError('Received a packet before the Session Description', from, packet);
+      this.emit(SocketEvents.WARN, error);
       return;
     }
     if (packet.length <= 12) {
-      this.emit(SocketEvents.WARN, new MediaPacketError(
-        'Received an rtp packet that\'s way too small to be valid',
-        from,
-        packet,
-      ));
+      const error = new MediaPacketError('Received an rtp packet that\'s way too small to be valid', from, packet);
+      this.emit(SocketEvents.WARN, error);
       return;
     }
     if (!isValidRTPHeader(packet)) {
-      this.emit(SocketEvents.WARN, new MediaPacketError(
-        'Invalid RTP Packet',
-        from,
-        packet,
-      ));
+      const error = new MediaPacketError('Invalid RTP Packet', from, packet);
+      this.emit(SocketEvents.WARN, error);
+      return;
     }
 
     const packetType = packet.readUIntBE(1, 1);
@@ -427,12 +416,8 @@ export class Socket extends EventEmitter {
       }
       */
       if (!RTP_PAYLOAD_TYPES.includes(payloadType)) {
-        this.emit(SocketEvents.WARN, new MediaRTPError(
-          'Unknown RTP Packet Payload Type',
-          from,
-          packet,
-          rtp,
-        ));
+        const error = new MediaRTPError('Unknown RTP Packet Payload Type', from, packet, rtp);
+        this.emit(SocketEvents.WARN, error);
         return;
       }
 
@@ -458,22 +443,13 @@ export class Socket extends EventEmitter {
       }
 
       if (format === MediaCodecTypes.VIDEO && !this.videoEnabled) {
-        this.emit(SocketEvents.LOG, new MediaRTPError(
-          'Dropping video packet due to video not being enabled',
-          from,
-          packet,
-          rtp,
-        ));
+        const error = new MediaRTPError('Dropping video packet due to video not being enabled', from, packet, rtp);
+        this.emit(SocketEvents.LOG, error);
         return;
       }
 
       rtp.nonce = Buffer.alloc(24);
       switch (this.mode) {
-        case MediaEncryptionModes.PLAIN: {
-          // I assume theres no nonce?
-          // only included cuz the docs have it in the examples lol
-          rtp.payload = packet.slice(12);
-        }; break;
         case MediaEncryptionModes.XSALSA20_POLY1305_LITE: {
           // last 4 bytes
           packet.copy(rtp.nonce, 0, packet.length - 4);
@@ -491,33 +467,20 @@ export class Socket extends EventEmitter {
           rtp.payload = packet.slice(12);
         }; break;
         default: {
-          this.emit(SocketEvents.WARN, new MediaRTPError(
-            `${this.mode} is not supported for decoding.`,
-            from,
-            packet,
-            rtp,
-          ));
+          const error = new MediaRTPError(`${this.mode} is not supported for decoding.`, from, packet, rtp);
+          this.emit(SocketEvents.WARN, error);
           return;
         };
       }
 
-      let data: Buffer | null = null;
-      if (this.mode === MediaEncryptionModes.PLAIN) {
-        data = rtp.payload;
-      } else {
-        data = RTPCrypto.decrypt(
-          <Uint8Array> this.key,
-          <Buffer> rtp.payload,
-          <Buffer> rtp.nonce,
-        );
-      }
-      if (data === null) {
-        this.emit(SocketEvents.WARN, new MediaRTPError(
-          'Packet failed to decrypt',
-          from,
-          packet,
-          rtp,
-        ));
+      let data: Buffer | null = RTPCrypto.decrypt(
+        <Uint8Array> this.key,
+        <Buffer> rtp.payload,
+        <Buffer> rtp.nonce,
+      );
+      if (!data) {
+        const error = new MediaRTPError('Packet failed to decrypt', from, packet, rtp);
+        this.emit(SocketEvents.WARN, error);
         return;
       }
 
@@ -567,12 +530,8 @@ export class Socket extends EventEmitter {
           // using two bytes, 0x10 and 0x00 instead
           // if appbits is all 0s, ignore, so rn ignore this packet
 
-          this.emit(SocketEvents.LOG, new MediaRTPError(
-            'Received Two Byte header with appbits being 0, ignoring',
-            from,
-            packet,
-            rtp,
-          ));
+          const error = new MediaRTPError('Received Two Byte header with appbits being 0, ignoring', from, packet, rtp);
+          this.emit(SocketEvents.LOG, error);
           return;
           /*
           // handle the two byte
@@ -749,9 +708,6 @@ export class Socket extends EventEmitter {
 
     let nonce: Buffer;
     switch (this.mode) {
-      case MediaEncryptionModes.PLAIN: {
-        nonce = Buffer.alloc(0);
-      }; break;
       case MediaEncryptionModes.XSALSA20_POLY1305_LITE: {
         if (!useCache && options.nonce === undefined) {
           throw new Error(`You must use cache if you do not send in an incrementing nonce with the Encryption mode being ${this.mode}`);

@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.3.1',
+  VERSION: '0.3.2',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -206,7 +206,6 @@ export const MEDIA_CODECS_VIDEO = [
 ];
 
 export const MediaEncryptionModes = Object.freeze({
-  PLAIN: 'plain',
   XSALSA20_POLY1305_LITE: 'xsalsa20_poly1305_lite',
   XSALSA20_POLY1305_SUFFIX: 'xsalsa20_poly1305_suffix',
   XSALSA20_POLY1305: 'xsalsa20_poly1305',

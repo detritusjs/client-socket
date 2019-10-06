@@ -364,11 +364,6 @@ export class Socket extends EventEmitter {
       }; break;
       case MediaOpCodes.HELLO: {
         this.setHeartbeat(packet.d);
-        if (this.identified && this.transport) {
-          this.resume();
-        } else {
-          this.identify();
-        }
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
         if (packet.d !== this._heartbeat.nonce) {
@@ -494,6 +489,11 @@ export class Socket extends EventEmitter {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
       this.setState(SocketStates.OPEN);
+      if (this.identified && this.transport) {
+        this.resume();
+      } else {
+        this.identify();
+      }
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
     }
