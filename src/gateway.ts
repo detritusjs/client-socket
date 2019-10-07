@@ -1020,7 +1020,7 @@ export interface PresenceActivity {
   details?: string,
   emoji?: {
     animated: boolean,
-    id: string,
+    id: null | string,
     name: string,
   },
   flags?: number,
