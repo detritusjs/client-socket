@@ -251,6 +251,7 @@ export class Socket extends EventEmitter {
           assets: activity.assets,
           created_at: activity.createdAt,
           details: activity.details,
+          emoji: activity.emoji,
           flags: activity.flags,
           metadata: activity.metadata,
           name: activity.name,
@@ -269,6 +270,13 @@ export class Socket extends EventEmitter {
             large_text: activity.assets.largeText,
             small_image: activity.assets.smallImage,
             small_text: activity.assets.smallText,
+          };
+        }
+        if (activity.emoji) {
+          raw.emoji = {
+            animated: activity.emoji.animated,
+            id: activity.emoji.id,
+            name: activity.emoji.name,
           };
         }
         if (activity.party) {
@@ -1010,6 +1018,11 @@ export interface PresenceActivity {
   },
   createdAt?: number,
   details?: string,
+  emoji?: {
+    animated: boolean,
+    id: string,
+    name: string,
+  },
   flags?: number,
   metadata?: {[key: string]: any},
   name: string,
