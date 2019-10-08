@@ -74,7 +74,7 @@ export interface SocketOptions {
   guildSubscriptions?: boolean,
   identifyProperties?: IdentifyDataProperties,
   largeThreshold?: number,
-  presence?: any,
+  presence?: PresenceOptions,
   reconnectDelay?: number,
   reconnectMax?: number,
   shardCount?: number,
@@ -222,48 +222,44 @@ export class Socket extends EventEmitter {
     }
   }
 
-  makePresence(
-    options?: PresenceOptions,
-  ): PresenceData {
+  makePresence(options?: PresenceOptions): RawPresence {
     options = this.presence = Object.assign({}, defaultPresence, this.presence, options);
-    const activities: Array<PresenceActivity> = [...(options.activities || [])];
 
-    const data: PresenceData = {
+    const data: RawPresence = {
+      activities: [],
       afk: options.afk,
       since: options.since,
       status: options.status,
     };
 
-    if (options.activity || options.game) {
-      if (options.activity) {
-        activities.unshift(options.activity);
-      }
-      if (options.game) {
-        activities.unshift(options.game);
-      }
+    const activities: Array<PresenceActivityOptions> = [...(options.activities || [])];
+    if (options.activity) {
+      activities.unshift(options.activity);
+    }
+    if (options.game) {
+      activities.unshift(options.game);
     }
 
     if (activities.length) {
-      data.activities = [];
       for (let activity of activities) {
-        const raw: any = {
+        const raw: RawPresenceActivity = {
           application_id: activity.applicationId,
-          assets: activity.assets,
-          created_at: activity.createdAt,
+          assets: undefined,
           details: activity.details,
-          emoji: activity.emoji,
+          emoji: undefined,
           flags: activity.flags,
           metadata: activity.metadata,
           name: activity.name,
-          party: activity.party,
-          secrets: activity.secrets,
+          party: undefined,
+          secrets: undefined,
           session_id: activity.sessionId,
           state: activity.state,
           sync_id: activity.syncId,
-          timestamps: activity.timestamps,
+          timestamps: undefined,
           type: activity.type,
           url: activity.url,
         };
+
         if (activity.assets) {
           raw.assets = {
             large_image: activity.assets.largeImage,
@@ -984,7 +980,7 @@ export interface IdentifyData {
   compress?: boolean,
   guild_subscriptions?: boolean,
   large_threshold?: number,
-  presence?: PresenceData,
+  presence?: RawPresence,
   properties: IdentifyDataProperties,
   shard?: Array<number>,
   token: string,
@@ -1008,7 +1004,60 @@ export interface IdentifyDataProperties {
   window_manager?: string,
 }
 
-export interface PresenceActivity {
+export interface RawPresenceActivity {
+  application_id?: string,
+  assets?: {
+    large_image?: string,
+    large_text?: string,
+    small_image?: string,
+    small_text?: string,
+  },
+  details?: string,
+  emoji?: {
+    animated: boolean,
+    id: null | string,
+    name: string,
+  },
+  flags?: number,
+  id?: string,
+  instance?: boolean,
+  metadata?: {[key: string]: any},
+  name: string,
+  party?: {
+    id?: string,
+    size?: Array<[number, number]>,
+  },
+  secrets?: {
+    join?: string,
+    match?: string,
+    spectate?: string,
+  },
+  session_id?: string,
+  state?: string,
+  sync_id?: string,
+  timestamps?: {
+    end?: number,
+    start?: number,
+  },
+  type: number,
+  url?: string,
+}
+
+export interface RawPresence {
+  activities: Array<RawPresenceActivity>,
+  afk: boolean,
+  since: number,
+  status: string,
+}
+
+export interface ResumeData {
+  seq?: null | number,
+  session_id: null | string,
+  token: string,
+}
+
+
+export interface PresenceActivityOptions {
   applicationId?: string,
   assets?: {
     largeImage?: string,
@@ -1016,7 +1065,6 @@ export interface PresenceActivity {
     smallImage?: string,
     smallText?: string,
   },
-  createdAt?: number,
   details?: string,
   emoji?: {
     animated: boolean,
@@ -1046,21 +1094,11 @@ export interface PresenceActivity {
   url?: string,
 }
 
-export interface PresenceData {
-  activities?: Array<PresenceActivity>,
+export interface PresenceOptions {
+  activities?: Array<PresenceActivityOptions>,
+  activity?: PresenceActivityOptions,
   afk: boolean,
-  game?: PresenceActivity,
+  game?: PresenceActivityOptions,
   since: number,
   status: string,
-}
-
-export interface PresenceOptions extends PresenceData {
-  activity?: PresenceActivity,
-  game?: PresenceActivity,
-}
-
-export interface ResumeData {
-  seq?: null | number,
-  session_id: null | string,
-  token: string,
 }
