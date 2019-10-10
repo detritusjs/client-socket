@@ -222,14 +222,14 @@ export class Socket extends EventSpewer {
     }
   }
 
-  makePresence(options?: PresenceOptions): RawPresence {
+  makePresence(options: PresenceOptions = {}): RawPresence {
     options = this.presence = Object.assign({}, defaultPresence, this.presence, options);
 
     const data: RawPresence = {
       activities: [],
-      afk: options.afk,
-      since: options.since,
-      status: options.status,
+      afk: !!options.afk,
+      since: options.since || null,
+      status: options.status || defaultPresence.status,
     };
 
     const activities: Array<PresenceActivityOptions> = [...(options.activities || [])];
@@ -793,7 +793,7 @@ export class Socket extends EventSpewer {
   }
 
   setPresence(
-    options: PresenceOptions,
+    options: PresenceOptions = {},
     callback?: Function,
   ): void {
     const data = this.makePresence(options);
@@ -1046,7 +1046,7 @@ export interface RawPresenceActivity {
 export interface RawPresence {
   activities: Array<RawPresenceActivity>,
   afk: boolean,
-  since: number,
+  since: null | number,
   status: string,
 }
 
@@ -1097,8 +1097,8 @@ export interface PresenceActivityOptions {
 export interface PresenceOptions {
   activities?: Array<PresenceActivityOptions>,
   activity?: PresenceActivityOptions,
-  afk: boolean,
+  afk?: boolean,
   game?: PresenceActivityOptions,
-  since: number,
-  status: string,
+  since?: null | number,
+  status?: string,
 }
