@@ -1,6 +1,6 @@
 import * as dgram from 'dgram';
 
-import { EventEmitter } from 'detritus-utils';
+import { EventSpewer } from 'detritus-utils';
 
 import {
   MediaCodecs,
@@ -70,7 +70,7 @@ export interface UDPFrom {
 }
 
 
-export class Socket extends EventEmitter {
+export class Socket extends EventSpewer {
   caches: {
     audio: Buffer,
     video?: Buffer,
@@ -768,7 +768,7 @@ export class Socket extends EventEmitter {
     });
   }
 
-  on(event: string, listener: Function): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'close', listener: () => any): this;
   on(event: 'killed', listener: () => any): this;
   on(event: 'log', listener: (error: Error) => any): this;
@@ -777,7 +777,7 @@ export class Socket extends EventEmitter {
   on(event: 'ready', listener: () => any): this;
   on(event: 'socket', listener: (socket: dgram.Socket) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
-  on(event: string, listener: Function): this {
+  on(event: string | symbol, listener: (...args: any[]) => void): this {
     super.on(event, listener);
     return this;
   }

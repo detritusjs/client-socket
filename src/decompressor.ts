@@ -1,4 +1,4 @@
-import { EventEmitter } from 'detritus-utils';
+import { EventSpewer } from 'detritus-utils';
 
 import { InflateError } from './errors';
 
@@ -24,7 +24,7 @@ try {
   Inflate.type = DependencyTypes.PAKO;
 } catch(e) {}
 
-export class Decompressor extends EventEmitter {
+export class Decompressor extends EventSpewer {
   dataChunks: Array<Buffer>;
   chunks: Array<Buffer>;
   chunkSize: number;

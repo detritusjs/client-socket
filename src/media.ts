@@ -1,4 +1,4 @@
-import { EventEmitter, Timers } from 'detritus-utils';
+import { EventSpewer, Timers } from 'detritus-utils';
 
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
@@ -39,7 +39,7 @@ const defaultOptions = {
   video: false,
 };
 
-export class Socket extends EventEmitter {
+export class Socket extends EventSpewer {
   readonly state: string = SocketStates.CLOSED;
 
   _heartbeat: {
@@ -724,7 +724,7 @@ export class Socket extends EventEmitter {
     );
   }
 
-  on(event: string, listener: Function): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
   on(event: 'killed', listener: () => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
@@ -735,7 +735,7 @@ export class Socket extends EventEmitter {
   on(event: 'transport', listener: (transport: MediaUDPSocket) => any): this;
   on(event: 'transportReady', listener: (transport: MediaUDPSocket) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
-  on(event: string, listener: Function): this {
+  on(event: string | symbol, listener: (...args: any[]) => void): this {
     super.on(event, listener);
     return this;
   }

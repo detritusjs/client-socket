@@ -1,7 +1,7 @@
 import * as os from 'os';
 import { URL } from 'url';
 
-import { EventEmitter, BaseCollection, Timers } from 'detritus-utils';
+import { EventSpewer, BaseCollection, Timers } from 'detritus-utils';
 
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
@@ -81,7 +81,7 @@ export interface SocketOptions {
   shardId?: number,
 }
 
-export class Socket extends EventEmitter {
+export class Socket extends EventSpewer {
   readonly state: string = SocketStates.CLOSED;
 
   _heartbeat: {
@@ -954,7 +954,7 @@ export class Socket extends EventEmitter {
     });
   }
 
-  on(event: string, listener: Function): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
   on(event: 'killed', listener: () => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
@@ -963,7 +963,7 @@ export class Socket extends EventEmitter {
   on(event: 'socket', listener: (socket: BaseSocket) => any): this;
   on(event: 'state', listener: ({state}: {state: string}) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
-  on(event: string, listener: Function): this {
+  on(event: string | symbol, listener: (...args: any[]) => void): this {
     super.on(event, listener);
     return this;
   }

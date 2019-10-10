@@ -1,4 +1,4 @@
-import { BaseCollection, EventEmitter, Timers } from 'detritus-utils';
+import { BaseCollection, EventSpewer, Timers } from 'detritus-utils';
 
 import {
   SocketCloseCodes,
@@ -32,7 +32,7 @@ if (WebsocketDependency.module === null) {
   throw new Error(`Missing a WebSocket Dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`)
 }
 
-export class BaseSocket extends EventEmitter {
+export class BaseSocket extends EventSpewer {
   readonly pings = new BaseCollection<string, {
     reject: Function,
     resolve: Function,
