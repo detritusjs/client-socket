@@ -94,7 +94,14 @@ export class BaseSocket extends EventSpewer {
       this.pings.delete(nonce);
     }
     this.pings.clear();
-    this.socket.removeAllListeners();
+
+    for (let event of Object.values(SocketEventsBase)) {
+      // clear out all listeners but close from the socket
+      if (event === SocketEventsBase.CLOSE) {
+        continue;
+      }
+      this.socket.on(event, this.emit.bind(this, event));
+    }
     this.removeAllListeners();
   }
 

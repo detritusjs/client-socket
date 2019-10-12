@@ -23,6 +23,7 @@ import {
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
   SocketStates,
+  COMPRESS_TYPES,
   DEFAULT_SHARD_COUNT,
   DEFAULT_SHARD_LAUNCH_DELAY,
   DEFAULT_VOICE_TIMEOUT,
@@ -49,7 +50,7 @@ const IdentifyProperties = Object.freeze({
 
 const defaultOptions = Object.freeze({
   autoReconnect: true,
-  compress: CompressTypes.ZLIB,
+  compress: true,
   encoding: (Dependencies.Erlpack) ? EncodingTypes.ETF : EncodingTypes.JSON,
   guildSubscriptions: true,
   largeThreshold: 250,
@@ -134,7 +135,7 @@ export class Socket extends EventSpewer {
     }, defaultOptions, options);
     if (typeof(options.compress) === 'boolean') {
       if (options.compress) {
-        options.compress = CompressTypes.ZLIB;
+        options.compress = Decompressor.supported().shift();
       } else {
         options.compress = CompressTypes.NONE;
       }
@@ -158,11 +159,11 @@ export class Socket extends EventSpewer {
 
     Object.assign(this.identifyProperties, options.identifyProperties);
 
-    if (
-      (this.compress !== CompressTypes.NONE) &&
-      (this.compress !== CompressTypes.ZLIB)
-    ) {
-      throw new Error(`Compress type must be of: ${CompressTypes.NONE} or ${CompressTypes.ZLIB}`);
+    if (!COMPRESS_TYPES.includes(this.compress)) {
+      throw new Error(`Compress type must be of: '${COMPRESS_TYPES.join(', ')}'`);
+    }
+    if (this.compress === CompressTypes.PAYLOAD) {
+      throw new Error(`Compress type '${this.compress}' is currently not supported.`);
     }
 
     if (this.shardCount <= this.shardId) {
@@ -180,14 +181,20 @@ export class Socket extends EventSpewer {
     this.bucket = new Bucket(120, 60 * 1000);
 
     this.decompressor = null;
-    if (this.compress === CompressTypes.ZLIB) {
-      this.decompressor = new Decompressor(Buffer.from(ZLIB_SUFFIX));
-      this.decompressor.on('data', (data: any) => {
-        this.handle(data, true);
-      }).on('error', (error: any) => {
-        this.disconnect(SocketInternalCloseCodes.INVALID_DATA);
-        this.emit(SocketEvents.WARN, error);
-      });
+    switch (this.compress) {
+      case CompressTypes.ZLIB:
+      case CompressTypes.ZSTD: {
+        if (!Decompressor.supported().includes(this.compress)) {
+          throw new Error(`Missing modules for ${this.compress} Compress Type`);
+        }
+        this.decompressor = new Decompressor({type: this.compress});
+        this.decompressor.on('data', (data) => {
+          this.handle(data, true);
+        }).on('error', (error) => {
+          this.disconnect(SocketInternalCloseCodes.INVALID_DATA);
+          this.emit(SocketEvents.WARN, error);
+        });
+      };
     }
 
     Object.defineProperties(this, {
@@ -370,8 +377,11 @@ export class Socket extends EventSpewer {
     this.url.searchParams.set('v', String(ApiVersions.GATEWAY));
     this.url.pathname = this.url.pathname || '/';
 
-    if (this.compress === CompressTypes.ZLIB) {
-      this.url.searchParams.set('compress', CompressTypes.ZLIB);
+    switch (this.compress) {
+      case CompressTypes.ZLIB:
+      case CompressTypes.ZSTD: {
+        this.url.searchParams.set('compress', this.compress);
+      }; break;
     }
 
     const ws = this.socket = new BaseSocket(this.url.href);
@@ -394,7 +404,7 @@ export class Socket extends EventSpewer {
         data = Buffer.concat(data);
       }
       if (!uncompressed) {
-        if (this.compress === CompressTypes.ZLIB && this.decompressor) {
+        if (this.decompressor) {
           this.decompressor.feed(data);
           return null;
         }

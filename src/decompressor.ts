@@ -1,181 +1,69 @@
 import { EventSpewer } from 'detritus-utils';
 
-import { InflateError } from './errors';
+import { CompressTypes, ZLIB_SUFFIX } from './constants';
+import { ZlibDecompressor, ZstdDecompressor } from './decompressors';
 
-const DependencyTypes = Object.freeze({
-  PAKO: 'pako',
-  ZLIB: 'zlib',
-});
 
-const ErrorCodes = Object.freeze({
-  ERR_ZLIB_BINDING_CLOSED: 'ERR_ZLIB_BINDING_CLOSED',
-});
-
-const Inflate = {
-  flushCode: 0,
-  module: require(DependencyTypes.ZLIB),
-  type: DependencyTypes.ZLIB,
-};
-
-Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
-
-try {
-  Inflate.module = require(DependencyTypes.PAKO);
-  Inflate.type = DependencyTypes.PAKO;
-} catch(e) {}
+export interface DecompresserOptions {
+  type: string,
+}
 
 export class Decompressor extends EventSpewer {
-  dataChunks: Array<Buffer>;
-  chunks: Array<Buffer>;
-  chunkSize: number;
-  closed: boolean;
-  flushing: boolean;
-  inflate: any;
-  suffix: Buffer;
+  closed: boolean = false;
+  decompressor!: ZlibDecompressor | ZstdDecompressor;
+  type: string;
 
-  constructor(
-    suffix: Buffer,
-    chunkSize: number = 64 * 1024,
-  ) {
+  constructor(options: DecompresserOptions) {
     super();
 
-    this.dataChunks = [];
-    this.chunks = [];
-    this.chunkSize = chunkSize;
-    this.closed = false;
-    this.flushing = false;
-    this.inflate = null;
-    this.suffix = suffix;
-    this.initialize();
-  }
-
-  feed(chunk: Buffer): void {
-    if (!this.closed && this.inflate) {
-      this.chunks.push(chunk);
-      this.write();
+    this.type = options.type;
+    switch (this.type) {
+      case CompressTypes.ZLIB: {
+        this.decompressor = new ZlibDecompressor(Buffer.from(ZLIB_SUFFIX));
+        this.decompressor.on('data', (data) => this.emit('data', data));
+        this.decompressor.on('error', (error) => this.emit('error', error));
+      }; break;
+      case CompressTypes.ZSTD: {
+        this.decompressor = new ZstdDecompressor();
+        this.decompressor.on('data', (data) => this.emit('data', data));
+        this.decompressor.on('error', (error) => this.emit('error', error));
+      }; break;
+      default: {
+        throw new Error(`Invalid Compress Type: ${this.type}`);
+      };
     }
   }
 
   close(): void {
-    this.closed = true;
-    this.chunks.length = 0;
-    this.dataChunks.length = 0;
-    this.flushing = false;
-    switch (Inflate.type) {
-      case DependencyTypes.ZLIB: {
-        this.inflate.close();
-        this.inflate.removeAllListeners('data');
-      }; break;
+    if (!this.closed) {
+      this.closed = true;
+      this.decompressor.close();
+      this.decompressor.removeAllListeners();
+      this.removeAllListeners();
     }
-    this.inflate = null;
   }
 
-  initialize(): void {
-    switch (Inflate.type) {
-      case DependencyTypes.PAKO: {
-        this.inflate = new Inflate.module.Inflate({
-          chunkSize: this.chunkSize,
-        });
-      }; break;
-      case DependencyTypes.ZLIB: {
-        this.inflate = Inflate.module.createInflate({
-          chunkSize: this.chunkSize,
-          flush: Inflate.flushCode,
-        });
-        this.inflate.on('data', this.onData.bind(this));
-        this.inflate.on('error', this.onError.bind(this));
-      }; break;
-      default: {
-        throw new Error(`Unable to use any ${JSON.stringify(Object.values(DependencyTypes))}`);
-      };
-    }
-
-    this.dataChunks.length = 0;
-    this.chunks.length = 0;
-    this.flushing = false;
-    this.closed = false;
+  feed(data: Buffer): void {
+    this.decompressor.feed(data);
   }
 
   reset(): void {
-    this.close();
-    this.initialize();
+    this.decompressor.reset();
   }
 
-  write(): void {
-    if (
-      (this.closed) ||
-      (!this.inflate) ||
-      (!this.chunks.length) ||
-      (this.flushing)
-    ) {
-      return;
-    }
-
-    const chunk = <Buffer> this.chunks.shift();
-    const isEnd = (
-      (this.suffix.length <= chunk.length) &&
-      (chunk.slice(-this.suffix.length).equals(this.suffix))
-    );
-
-    switch (Inflate.type) {
-      case DependencyTypes.PAKO: {
-        this.inflate.push(chunk, isEnd && Inflate.flushCode);
-        if (isEnd) {
-          if (this.inflate.err) {
-            const error = new InflateError(this.inflate.msg, this.inflate.err);
-            this.onError(error);
-          } else {
-            this.onData(this.inflate.result);
-          }
-        }
-      }; break;
-      case DependencyTypes.ZLIB: {
-        this.inflate.write(chunk);
-        if (isEnd) {
-          this.flushing = true;
-          this.inflate.flush(Inflate.flushCode, this.onFlush.bind(this));
-          return;
-        }
-      }; break;
-    }
-    this.write();
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
+  on(event: 'data', listener: (data: Buffer) => any): this;
+  on(event: 'error', listener: (error: Error) => any): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this {
+    super.on(event, listener);
+    return this;
   }
 
-  onData(
-    data: any,
-  ): void {
-    switch (Inflate.type) {
-      case DependencyTypes.PAKO: {
-        this.emit('data', Buffer.from(data));
-      }; break
-      case DependencyTypes.ZLIB: {
-        this.dataChunks.push(<Buffer> data);
-      }; break;
+  static supported(): Array<string> {
+    const supported: Array<string> = [CompressTypes.ZLIB];
+    if (ZstdDecompressor.isSupported()) {
+      supported.unshift(CompressTypes.ZSTD);
     }
-  }
-
-  onError(
-    error: any,
-  ): void {
-    if (error.code === ErrorCodes.ERR_ZLIB_BINDING_CLOSED) {
-      // zlib was flushing when we called .close on it
-      return;
-    }
-    this.emit('error', error);
-  }
-
-  onFlush(
-    error: any,
-  ): void {
-    if (error) {
-      return;
-    }
-    if (this.dataChunks.length) {
-      const chunk = (this.dataChunks.length === 1) ? this.dataChunks.shift() : Buffer.concat(this.dataChunks);
-      this.dataChunks.length = 0;
-      this.emit('data', chunk);
-    }
-    this.flushing = false;
-    this.write();
+    return supported;
   }
 }

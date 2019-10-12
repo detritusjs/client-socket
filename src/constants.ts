@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.4.1',
+  VERSION: '0.4.2',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -22,6 +22,8 @@ export const CompressTypes = Object.freeze({
   ZLIB: 'zlib-stream',
   ZSTD: 'zstd-stream',
 });
+
+export const COMPRESS_TYPES = Object.freeze(Object.values(CompressTypes));
 
 export const DEFAULT_SHARD_COUNT = 1;
 export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
@@ -211,7 +213,7 @@ export const MediaEncryptionModes = Object.freeze({
   XSALSA20_POLY1305: 'xsalsa20_poly1305',
 });
 
-export const MEDIA_ENCRYPTION_MODES = Object.values(MediaEncryptionModes);
+export const MEDIA_ENCRYPTION_MODES = Object.freeze(Object.values(MediaEncryptionModes));
 
 export const MediaOpCodes = Object.freeze({
   IDENTIFY: 0,
@@ -235,7 +237,7 @@ export const MediaProtocols = Object.freeze({
   WEBRTC: 'webrtc',
 });
 
-export const MEDIA_PROTOCOLS = Object.values(MediaProtocols);
+export const MEDIA_PROTOCOLS = Object.freeze(Object.values(MediaProtocols));
 
 export const MediaReceivedVideoQuality = Object.freeze({
   OFF: 'off',
@@ -278,8 +280,6 @@ export const SocketEventsBase = Object.freeze({
   OPEN: 'open',
   PING: 'ping',
   PONG: 'pong',
-  UNEXPECTED_RESPONSE: 'unexpected-response',
-  UPGRADE: 'upgrade',
 });
 
 export const SocketCloseCodes = Object.freeze({
@@ -368,7 +368,7 @@ export const RTPPayloadTypes = Object.freeze({
   H264: 0x69,
 });
 
-export const RTP_PAYLOAD_TYPES = Object.values(RTPPayloadTypes);
+export const RTP_PAYLOAD_TYPES = Object.freeze(Object.values(RTPPayloadTypes));
 
 export const RTCP_HEADER_VERSION = 0x80;
 
@@ -382,7 +382,7 @@ export const RTCPPacketTypes = Object.freeze({
   PSFB: 206,
 });
 
-export const RTCP_PACKET_TYPES = Object.values(RTCPPacketTypes);
+export const RTCP_PACKET_TYPES = Object.freeze(Object.values(RTCPPacketTypes));
 
 export const RTPHeaderExtensionOneByte = Object.freeze({
   HEADER: [0xBE, 0xDE],
