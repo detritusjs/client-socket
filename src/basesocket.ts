@@ -43,14 +43,13 @@ export class BaseSocket extends EventSpewer {
   constructor(url: string) {
     super();
     this.socket = new WebsocketDependency.module(url);
+    this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this));
     this.socket.on(SocketEventsBase.PONG, this.onPong.bind(this));
 
-    for (let event of Object.values(SocketEventsBase)) {
-      if (event === SocketEventsBase.PONG) {
-        continue;
-      }
-      this.socket.on(event, this.emit.bind(this, event));
-    }
+    this.socket.on(SocketEventsBase.ERROR, this.emit.bind(this, SocketEventsBase.ERROR));
+    this.socket.on(SocketEventsBase.MESSAGE, this.emit.bind(this, SocketEventsBase.MESSAGE));
+    this.socket.on(SocketEventsBase.OPEN, this.emit.bind(this, SocketEventsBase.OPEN));
+    this.socket.on(SocketEventsBase.PING, this.emit.bind(this, SocketEventsBase.PING));
   }
 
   get closed(): boolean {
@@ -73,41 +72,34 @@ export class BaseSocket extends EventSpewer {
     return WebsocketDependency.type;
   }
 
-  send(
-    data: any,
-    callback?: Function,
-  ): void {
+  send(data: any, callback?: Function): void {
     if (this.connected) {
       this.socket.send(data, {}, callback);
     }
   }
 
-  close(
-    code: number = SocketCloseCodes.NORMAL,
-    reason: string = '',
-  ): void {
+  close(code: number = SocketCloseCodes.NORMAL, reason: string = ''): void {
     if (this.connected) {
       this.socket.close(code, reason);
     }
+  }
+
+  onClose(code: number, message: string): void {
     for (const [nonce, {reject}] of this.pings) {
       reject(new Error('Socket has closed.'));
       this.pings.delete(nonce);
     }
     this.pings.clear();
 
-    for (let event of Object.values(SocketEventsBase)) {
-      // clear out all listeners but close from the socket
-      if (event === SocketEventsBase.CLOSE) {
-        continue;
-      }
-      this.socket.on(event, this.emit.bind(this, event));
-    }
+    this.socket.removeAllListeners();
+    this.emit(SocketEventsBase.CLOSE, code, message);
+
     this.removeAllListeners();
   }
 
   onPong(data: any): void {
     try {
-      const { nonce } = JSON.parse(String(data));
+      const { nonce }: { nonce: string } = JSON.parse(String(data));
       const ping = this.pings.get(nonce);
       if (ping) {
         ping.resolve();
@@ -137,10 +129,7 @@ export class BaseSocket extends EventSpewer {
 
       const now = Date.now();
       new Promise((res, rej) => {
-        this.pings.set(nonce, {
-          resolve: res,
-          reject: rej,
-        });
+        this.pings.set(nonce, {resolve: res, reject: rej});
         this.socket.ping(JSON.stringify({nonce}));
       }).then(() => {
         expire.stop();

@@ -19,6 +19,7 @@ import {
   Package,
   SocketCloseCodes,
   SocketEvents,
+  SocketEventsBase,
   SocketGatewayCloseCodes,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
