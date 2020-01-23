@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.4.5',
+  VERSION: '0.4.6',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -16,12 +16,12 @@ export const ApiVersions = Object.freeze({
   MEDIA_GATEWAY: 4,
 });
 
-export const CompressTypes = Object.freeze({
-  NONE: 'none',
-  PAYLOAD: 'payload',
-  ZLIB: 'zlib-stream',
-  ZSTD: 'zstd-stream',
-});
+export enum CompressTypes {
+  NONE = 'none',
+  PAYLOAD = 'payload',
+  ZLIB = 'zlib-stream',
+  ZSTD = 'zstd-stream',
+}
 
 export const COMPRESS_TYPES = Object.freeze(Object.values(CompressTypes));
 
@@ -29,35 +29,35 @@ export const DEFAULT_SHARD_COUNT = 1;
 export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
 export const DEFAULT_VOICE_TIMEOUT = 30000;
 
-export const EncodingTypes = Object.freeze({
-  ETF: 'etf',
-  JSON: 'json',
-});
+export enum EncodingTypes {
+  ETF = 'etf',
+  JSON = 'json',
+}
 
-export const GatewayActivityActionTypes = Object.freeze({
-  JOIN: 1,
-  SPECTATE: 2,
-  LISTEN: 3,
-  WATCH: 4,
-  JOIN_REQUEST: 5,
-});
+export enum GatewayActivityActionTypes {
+  JOIN = 1,
+  SPECTATE = 2,
+  LISTEN = 3,
+  WATCH = 4,
+  JOIN_REQUEST = 5,
+}
 
-export const GatewayActivityFlags = Object.freeze({
-  INSTANCE:     1 << 0,
-  JOIN:         1 << 1,
-  SPECTATE:     1 << 2,
-  JOIN_REQUEST: 1 << 3,
-  SYNC:         1 << 4,
-  PLAY:         1 << 5,
-});
+export enum GatewayActivityFlags {
+  INSTANCE = 1 << 0,
+  JOIN = 1 << 1,
+  SPECTATE = 1 << 2,
+  JOIN_REQUEST = 1 << 3,
+  SYNC = 1 << 4,
+  PLAY = 1 << 5,
+}
 
-export const GatewayActivityTypes = Object.freeze({
-  PLAYING: 0,
-  STREAMING: 1,
-  LISTENING: 2,
-  WATCHING: 3,
-  CUSTOM_STATUS: 4,
-});
+export enum GatewayActivityTypes {
+  PLAYING = 0,
+  STREAMING = 1,
+  LISTENING = 2,
+  WATCHING = 3,
+  CUSTOM_STATUS = 4,
+}
 
 export const GatewayDispatchEvents = normalize({
   READY: null,
@@ -97,6 +97,8 @@ export const GatewayDispatchEvents = normalize({
   GUILD_ROLE_CREATE: null,
   GUILD_ROLE_DELETE: null,
   GUILD_ROLE_UPDATE: null,
+  INVITE_CREATE: null,
+  INVITE_DELETE: null,
   LIBRARY_APPLICATION_UPDATE: null,
   LOBBY_CREATE: null,
   LOBBY_DELETE: null,
@@ -114,6 +116,7 @@ export const GatewayDispatchEvents = normalize({
   MESSAGE_REACTION_ADD: null,
   MESSAGE_REACTION_REMOVE: null,
   MESSAGE_REACTION_REMOVE_ALL: null,
+  MESSAGE_REACTION_REMOVE_EMOJI: null,
   MESSAGE_UPDATE: null,
   OAUTH2_TOKEN_REMOVE: null,
   PRESENCES_REPLACE: null,
@@ -143,40 +146,57 @@ export const GatewayDispatchEvents = normalize({
   WEBHOOKS_UPDATE: null,
 });
 
-export const GatewayOpCodes = Object.freeze({
-  DISPATCH: 0,
-  HEARTBEAT: 1,
-  IDENTIFY: 2,
-  PRESENCE_UPDATE: 3,
-  VOICE_STATE_UPDATE: 4,
-  VOICE_SERVER_PING: 5,
-  RESUME: 6,
-  RECONNECT: 7,
-  REQUEST_GUILD_MEMBERS: 8,
-  INVALID_SESSION: 9,
-  HELLO: 10,
-  HEARTBEAT_ACK: 11,
-  SYNC_GUILD: 12,
-  CALL_CONNECT: 13,
-  GUILD_SUBSCRIPTIONS: 14,
-  LOBBY_CONNECT: 15,
-  LOBBY_DISCONNECT: 16,
-  LOBBY_VOICE_STATES_UPDATE: 17,
-  STREAM_CREATE: 18,
-  STREAM_DELETE: 19,
-  STREAM_WATCH: 20,
-  STREAM_PING: 21,
-  STREAM_SET_PAUSED: 22,
-  FLUSH_LFG_SUBSCRIPTIONS: 23,
-});
+export enum GatewayIntents {
+  GUILDS = 1 << 0,
+  GUILD_MEMBERS = 1 << 1,
+  GUILD_BANS = 1 << 2,
+  GUILD_EMOJIS = 1 << 3,
+  GUILD_INTEGRATIONS = 1 << 4,
+  GUILD_WEBHOOKS = 1 << 5,
+  GUILD_INVITES = 1 << 6,
+  GUILD_VOICE_STATES = 1 << 7,
+  GUILD_PRESENCES = 1 << 8,
+  GUILD_MESSAGES = 1 << 9,
+  GUILD_MESSAGE_REACTIONS = 1 << 10,
+  GUILD_MESSAGE_TYPING = 1 << 11,
+  DIRECT_MESSAGES = 1 << 12,
+  DIRECT_MESSAGE_REACTIONS = 1 << 13,
+  DIRECT_MESSAGE_TYPING = 1 << 14,
+}
 
-export const GatewayPresenceStatuses = Object.freeze({
-  ONLINE: 'online',
-  DND: 'dnd',
-  IDLE: 'idle',
-  INVISIBLE: 'invisible',
-  OFFLINE: 'offline',
-});
+export enum GatewayOpCodes {
+  DISPATCH = 0,
+  HEARTBEAT = 1,
+  IDENTIFY = 2,
+  PRESENCE_UPDATE = 3,
+  VOICE_STATE_UPDATE = 4,
+  VOICE_SERVER_PING = 5,
+  RESUME = 6,
+  RECONNECT = 7,
+  REQUEST_GUILD_MEMBERS = 8,
+  INVALID_SESSION = 9,
+  HELLO = 10,
+  HEARTBEAT_ACK = 11,
+  SYNC_GUILD = 12,
+  CALL_CONNECT = 13,
+  GUILD_SUBSCRIPTIONS = 14,
+  LOBBY_CONNECT = 15,
+  LOBBY_DISCONNECT = 16,
+  LOBBY_VOICE_STATES_UPDATE = 17,
+  STREAM_CREATE = 18,
+  STREAM_DELETE = 19,
+  STREAM_WATCH = 20,
+  STREAM_PING = 21,
+  STREAM_SET_PAUSED = 22,
+}
+
+export enum GatewayPresenceStatuses {
+  ONLINE = 'online',
+  DND = 'dnd',
+  IDLE = 'idle',
+  INVISIBLE = 'invisible',
+  OFFLINE = 'offline',
+}
 
 export const MaxNumbers = Object.freeze({
   UINT8:  0xFF,
@@ -330,6 +350,7 @@ export const SocketGatewayCloseCodes = Object.freeze({
   SESSION_TIMEOUT: 4009,
   INVALID_SHARD: 4010,
   SHARDING_REQUIRED: 4011,
+  INVALID_INTENTS: 4012,
 });
 
 export const SocketMediaCloseCodes = Object.freeze({

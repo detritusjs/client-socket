@@ -14,6 +14,7 @@ import {
   CompressTypes,
   EncodingTypes,
   GatewayDispatchEvents,
+  GatewayIntents,
   GatewayOpCodes,
   GatewayPresenceStatuses,
   Package,
@@ -75,6 +76,7 @@ export interface SocketOptions {
   encoding?: string,
   guildSubscriptions?: boolean,
   identifyProperties?: IdentifyDataProperties,
+  intents?: Array<number> | Array<string> | string | number,
   largeThreshold?: number,
   presence?: PresenceOptions,
   reconnectDelay?: number,
@@ -101,13 +103,14 @@ export class Socket extends EventSpewer {
   };
   autoReconnect: boolean;
   bucket: Bucket;
-  compress: string;
+  compress: CompressTypes;
   disabledEvents: Array<string>;
   discordTrace: Array<any> = [];
   decompressor: Decompressor | null;
-  encoding: string;
+  encoding: EncodingTypes;
   guildSubscriptions: boolean;
   identifyProperties: IdentifyDataProperties = Object.assign({}, IdentifyProperties);
+  intents?: number;
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
@@ -141,10 +144,10 @@ export class Socket extends EventSpewer {
         options.compress = CompressTypes.NONE;
       }
     }
-  
+
     this.autoReconnect = !!options.autoReconnect;
-    this.compress = (<string> options.compress).toLowerCase();
-    this.encoding = (<string> options.encoding).toLowerCase();
+    this.compress = <CompressTypes> (<string> options.compress).toLowerCase();
+    this.encoding = <EncodingTypes> (<string> options.encoding).toLowerCase();
     this.disabledEvents = <Array<string>> options.disabledEvents;
     this.guildSubscriptions = !!options.guildSubscriptions;
     this.largeThreshold = <number> options.largeThreshold;
@@ -196,6 +199,24 @@ export class Socket extends EventSpewer {
           this.emit(SocketEvents.WARN, error);
         });
       };
+    }
+
+    if (options.intents !== undefined) {
+      this.intents = 0;
+
+      const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
+      for (let intent of intents) {
+        if (typeof(intent) === 'string') {
+          intent = intent.toUpperCase();
+          if (intent in GatewayIntents) {
+            this.intents |= (<any> GatewayIntents)[intent];
+          }
+        } else if (typeof(intent) === 'number') {
+          this.intents |= intent;
+        } else {
+          throw new Error(`Invalid intent received: ${intent}`);
+        }
+      }
     }
 
     Object.defineProperties(this, {
@@ -259,6 +280,7 @@ export class Socket extends EventSpewer {
           metadata: activity.metadata,
           name: activity.name,
           party: undefined,
+          platform: activity.platform,
           secrets: undefined,
           session_id: activity.sessionId,
           state: activity.state,
@@ -313,6 +335,7 @@ export class Socket extends EventSpewer {
       /* payload compression, rather use transport compression, using the get params overrides this */
       compress: (this.compress === CompressTypes.PAYLOAD),
       guild_subscriptions: this.guildSubscriptions,
+      intents: this.intents,
       large_threshold: this.largeThreshold,
       properties: this.identifyProperties,
       token: this.token,
@@ -440,13 +463,8 @@ export class Socket extends EventSpewer {
   ): void {
     const packet = this.decode(data, uncompressed);
     if (!packet) {return;}
-    if (packet.s) {
-      const oldSequence = this.sequence;
-      const newSequence = packet.s;
-      if (oldSequence + 1 < newSequence && !this.resuming) {
-        return this.resume();
-      }
-      this.sequence = newSequence;
+    if (packet.s !== null) {
+      this.sequence = packet.s;
     }
 
     switch (packet.op) {
@@ -726,15 +744,6 @@ export class Socket extends EventSpewer {
     }, callback);
   }
 
-  flushLfgSubscriptions(
-    subscriptions: any,
-    callback?: Function,
-  ): void {
-    this.send(GatewayOpCodes.FLUSH_LFG_SUBSCRIPTIONS, {
-      subscriptions,
-    }, callback);
-  }
-
   guildStreamCreate(
     guildId: string,
     channelId: string,
@@ -876,6 +885,7 @@ export class Socket extends EventSpewer {
     guildId: null | string = null,
     channelId: null | string = null,
     options: {
+      preferredRegion?: string,
       selfDeaf?: boolean,
       selfMute?: boolean,
       selfVideo?: boolean,
@@ -885,6 +895,7 @@ export class Socket extends EventSpewer {
     this.send(GatewayOpCodes.VOICE_STATE_UPDATE, {
       channel_id: channelId,
       guild_id: guildId,
+      preferred_region: options.preferredRegion,
       self_deaf: options.selfDeaf,
       self_mute: options.selfMute,
       self_video: options.selfVideo,
@@ -990,6 +1001,7 @@ export interface GatewayPacket {
 export interface IdentifyData {
   compress?: boolean,
   guild_subscriptions?: boolean,
+  intents?: number,
   large_threshold?: number,
   presence?: RawPresence,
   properties: IdentifyDataProperties,
@@ -1038,6 +1050,7 @@ export interface RawPresenceActivity {
     id?: string,
     size?: Array<[number, number]>,
   },
+  platform?: string,
   secrets?: {
     join?: string,
     match?: string,
@@ -1089,6 +1102,7 @@ export interface PresenceActivityOptions {
     id?: string,
     size?: Array<[number, number]>,
   },
+  platform?: string,
   secrets?: {
     join?: string,
     match?: string,
