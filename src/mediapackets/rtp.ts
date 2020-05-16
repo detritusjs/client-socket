@@ -178,7 +178,7 @@ export class RTPHeader {
       increment = true;
     }
     if (increment) {
-      sequence += this.sequence;
+      sequence = this.sequence + 1;
     }
     sequence %= MaxNumbers.UINT16;
     this.buffer.writeUIntBE(sequence, 2, 2);

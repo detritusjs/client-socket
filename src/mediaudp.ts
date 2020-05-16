@@ -8,6 +8,7 @@ import {
   MediaEncryptionModes,
   MediaProtocols,
   MediaSilencePacket,
+  MediaSSRCTypes,
   RTPHeaderExtensionOneByte,
   RTPHeaderExtensionTwoByte,
   RTPPayloadTypes,
@@ -54,9 +55,9 @@ export interface RTPPayload {
 }
 
 export interface TransportPacket {
-  codec: null | string,
+  codec: MediaCodecs | null,
   data: Buffer,
-  format: null | string,
+  format: MediaCodecTypes | null,
   from: UDPFrom,
   rtp?: RTPPayload,
   userId: null | string,
@@ -191,33 +192,33 @@ export class Socket extends EventSpewer {
   }
 
   setAudioCodec(
-    codec: null | string,
+    codec?: MediaCodecs | null | string,
   ): Socket {
     if (!codec) {
       return this;
     }
-    if (!MEDIA_CODECS_AUDIO.includes(codec)) {
+    if (!MEDIA_CODECS_AUDIO.includes(<MediaCodecs> codec)) {
       this.emit(SocketEvents.WARN, new Error(`Unsupported audio codec received: ${codec}`));
       this.mediaGateway.kill();
       return this;
     }
-    this.codecs.audio = codec;
+    this.codecs.audio = <MediaCodecs> codec;
     this.headers.audio.setPayloadType(<number> this.rtpAudioPayloadType);
     return this;
   }
 
   setVideoCodec(
-    codec: null | string,
+    codec?: MediaCodecs | null | string,
   ): Socket {
     if (!codec) {
       return this;
     }
-    if (!MEDIA_CODECS_VIDEO.includes(codec)) {
+    if (!MEDIA_CODECS_VIDEO.includes(<MediaCodecs> codec)) {
       this.emit(SocketEvents.WARN, new Error(`Unsupported video codec received: ${codec}`));
       this.mediaGateway.kill();
       return this;
     }
-    this.codecs.video = codec;
+    this.codecs.video = <MediaCodecs> codec;
     if (this.headers.video) {
       this.headers.video.setPayloadType(<number> this.rtpVideoPayloadType);
     }
@@ -421,8 +422,8 @@ export class Socket extends EventSpewer {
         return;
       }
 
-      let codec: string | null = null;
-      let format: string | null = null;
+      let codec: MediaCodecs | null = null;
+      let format: MediaCodecTypes| null = null;
       switch (payloadType) {
         case RTPPayloadTypes.OPUS: {
           codec = MediaCodecs.OPUS;
@@ -491,15 +492,12 @@ export class Socket extends EventSpewer {
       }
 
       if (rtp.header.extension) {
-        if (
-          RTPHeaderExtensionOneByte.HEADER.every((header: number, i: number) => {
-            return header === (<Buffer> data)[i];
-          })
-        ) {
+        if (RTPHeaderExtensionOneByte.HEADER.every((header, i) => header === (<Buffer> data)[i])) {
           // RFC5285 Section 4.2: One-Byte Header
 
           const fieldAmount = data.readUIntBE(2, 2);
-          const fields: Array<Buffer> = [];
+          // const fields: Array<Buffer> = [];
+          // Unknown as to what each field is
 
           let offset = 4;
           for (let i = 0; i < fieldAmount; i++) {
@@ -507,25 +505,29 @@ export class Socket extends EventSpewer {
             const identifer = byte & RTPHeaderExtensionOneByte.LOCAL_IDENTIFER;
             const len = ((byte >> 4) & RTPHeaderExtensionOneByte.LOCAL_IDENTIFER) + 1;
 
-            // ignore the data field if identifier === 15 (local identifer)
-            if (identifer) {
-              fields.push(data.slice(offset, offset + len));
+            // ignore rest if identifier === 15 (local identifer)
+            if (identifer === RTPHeaderExtensionOneByte.LOCAL_IDENTIFER) {
+              break;
             }
-            offset += len;
 
+            // skip the field data since we don't know what to do with it
+            offset += len;
+            // fields.push(data.slice(offset, offset += len));
+
+            /*
+            // apparently discord's padding isn't actually padding from the RFC..
+            // is just padding
             while (data[offset] === 0) {
               offset++;
             }
-
-            fields.push(data.slice(offset));
-            data = <Buffer> ((fields.length <= 1) ? fields.shift() : Buffer.concat(fields));
-            fields.length = 0;
+            */
           }
-        } else if (
-          RTPHeaderExtensionTwoByte.HEADER.every((header, i) => {
-            return header === (<Buffer> data)[i];
-          })
-        ) {
+          // https://github.com/discordjs/discord.js/pull/3555
+          offset++;
+          data = data.slice(offset);
+          // do something here with the fields, then clear it
+          // fields.length = 0;
+        } else if (RTPHeaderExtensionTwoByte.HEADER.every((header, i) => header === (<Buffer> data)[i])) {
           // RFC5285 Section 4.3: Two-Byte Header not received yet, appbits unknown anyways
           // using two bytes, 0x10 and 0x00 instead
           // if appbits is all 0s, ignore, so rn ignore this packet
@@ -559,7 +561,14 @@ export class Socket extends EventSpewer {
 
       let userId: null | string = null;
       if (format !== null) {
-        userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, format);
+        switch (format) {
+          case MediaCodecTypes.AUDIO: {
+            userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, MediaSSRCTypes.AUDIO);
+          }; break;
+          case MediaCodecTypes.VIDEO: {
+            userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, MediaSSRCTypes.VIDEO);
+          }; break;
+        }
       }
 
       this.emit(SocketEvents.PACKET, (<TransportPacket> {
@@ -627,7 +636,8 @@ export class Socket extends EventSpewer {
     if (type !== MediaCodecTypes.AUDIO && type !== MediaCodecTypes.VIDEO) {
       throw new Error('Invalid frame type');
     }
-    const useCache = options.useCache || options.useCache === undefined;
+
+    let useCache = options.useCache || options.useCache === undefined;
     if (type === MediaCodecTypes.VIDEO && !this.videoEnabled) {
       throw new Error('Cannot send in video frames when video is disabled!');
     }
@@ -709,9 +719,6 @@ export class Socket extends EventSpewer {
     let nonce: Buffer;
     switch (this.mode) {
       case MediaEncryptionModes.XSALSA20_POLY1305_LITE: {
-        if (!useCache && options.nonce === undefined) {
-          throw new Error(`You must use cache if you do not send in an incrementing nonce with the Encryption mode being ${this.mode}`);
-        }
         nonce = rtp.nonce.set(options.nonce, options.incrementNonce);
         data.push(nonce.slice(0, 4));
       }; break;

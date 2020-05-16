@@ -6,8 +6,9 @@ import { EventSpewer, BaseCollection, Timers } from 'detritus-utils';
 import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
 import { Decompressor } from './decompressor';
-import { DroppedPacketError } from './errors';
+import { DroppedPacketError, SocketKillError } from './errors';
 import { Socket as MediaSocket } from './media';
+import { GatewayPackets } from './types';
 
 import {
   ApiVersions,
@@ -20,7 +21,6 @@ import {
   Package,
   SocketCloseCodes,
   SocketEvents,
-  SocketEventsBase,
   SocketGatewayCloseCodes,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
@@ -29,8 +29,6 @@ import {
   DEFAULT_SHARD_COUNT,
   DEFAULT_SHARD_LAUNCH_DELAY,
   DEFAULT_VOICE_TIMEOUT,
-  SOCKET_STATES,
-  ZLIB_SUFFIX,
 } from './constants';
 
 
@@ -86,7 +84,7 @@ export interface SocketOptions {
 }
 
 export class Socket extends EventSpewer {
-  readonly state: string = SocketStates.CLOSED;
+  readonly state: SocketStates = SocketStates.CLOSED;
 
   _heartbeat: {
     ack: boolean,
@@ -186,8 +184,7 @@ export class Socket extends EventSpewer {
 
     this.decompressor = null;
     switch (this.compress) {
-      case CompressTypes.ZLIB:
-      case CompressTypes.ZSTD: {
+      case CompressTypes.ZLIB: {
         if (!Decompressor.supported().includes(this.compress)) {
           throw new Error(`Missing modules for ${this.compress} Compress Type`);
         }
@@ -244,8 +241,8 @@ export class Socket extends EventSpewer {
     return !!this.socket && this.socket.connecting;
   }
 
-  setState(value: string): void {
-    if (SOCKET_STATES.includes(value) && value !== this.state) {
+  setState(value: SocketStates): void {
+    if (value in SocketStates && value !== this.state) {
       Object.defineProperty(this, 'state', {value});
       this.emit(SocketEvents.STATE, {state: value});
     }
@@ -363,16 +360,28 @@ export class Socket extends EventSpewer {
     if (this.decompressor) {
       this.decompressor.reset();
     }
-    // 1000 close code, un-resumable
+
+    // un-resumable events
+    // 1000, 1001
+    // un-resumable and kill socket
+    // 4004 Authentication Failed
+    // 4010 Invalid Shard Sent
+    // 4011 Sharding Required
+    // 4012 Invalid Gateway Version
+    // 4013 Invalid Intents Sent
     switch (code) {
-      case SocketCloseCodes.NORMAL: {
+      case SocketCloseCodes.NORMAL:
+      case SocketCloseCodes.GOING_AWAY: {
         this.sequence = 0;
         this.sessionId = null;
       }; break;
       case SocketGatewayCloseCodes.AUTHENTICATION_FAILED:
       case SocketGatewayCloseCodes.INVALID_SHARD:
-      case SocketGatewayCloseCodes.SHARDING_REQUIRED: {
-        this.kill(new Error(reason || `Socket closed with ${code}, killing.`));
+      case SocketGatewayCloseCodes.SHARDING_REQUIRED:
+      case SocketGatewayCloseCodes.INVALID_VERSION:
+      case SocketGatewayCloseCodes.INVALID_INTENTS:
+      case SocketGatewayCloseCodes.DISALLOWED_INTENTS: {
+        this.kill(new SocketKillError(code, reason));
       }; break;
     }
     this._heartbeat.interval.stop();
@@ -402,8 +411,7 @@ export class Socket extends EventSpewer {
     this.url.pathname = this.url.pathname || '/';
 
     switch (this.compress) {
-      case CompressTypes.ZLIB:
-      case CompressTypes.ZSTD: {
+      case CompressTypes.ZLIB: {
         this.url.searchParams.set('compress', this.compress);
       }; break;
     }
@@ -449,7 +457,7 @@ export class Socket extends EventSpewer {
     this.cleanup(code, reason);
     if (this.socket) {
       if (!reason && (code in SocketInternalCloseReasons)) {
-        reason = <string> SocketInternalCloseReasons[code];
+        reason = (<any> SocketInternalCloseReasons)[code];
       }
       this.socket.close(code, reason);
       this.socket = null;
@@ -476,7 +484,9 @@ export class Socket extends EventSpewer {
         this._heartbeat.lastAck = Date.now();
       }; break;
       case GatewayOpCodes.HELLO: {
-        this.setHeartbeat(packet.d);
+        const data: GatewayPackets.Hello = packet.d;
+
+        this.setHeartbeat(data);
         if (this.sessionId) {
           this.resume();
         } else {
@@ -484,8 +494,9 @@ export class Socket extends EventSpewer {
         }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
+        const shouldResume: GatewayPackets.InvalidSession = packet.d;
         setTimeout(() => {
-          if (packet.d) {
+          if (shouldResume) {
             this.resume();
           } else {
             this.sequence = 0;
@@ -588,7 +599,7 @@ export class Socket extends EventSpewer {
   ) {
     let { code, reason } = event;
     if (!reason && (code in SocketInternalCloseReasons)) {
-      reason = <string> SocketInternalCloseReasons[code];
+      reason = (<any> SocketInternalCloseReasons)[code];
     }
     this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
@@ -702,10 +713,7 @@ export class Socket extends EventSpewer {
     }
   }
 
-  setHeartbeat(data: {
-    _trace: any,
-    heartbeat_interval: number,
-  }): void {
+  setHeartbeat(data: GatewayPackets.Hello): void {
     if (data) {
       this.heartbeat();
       this._heartbeat.ack = true;
@@ -746,12 +754,16 @@ export class Socket extends EventSpewer {
 
   guildStreamCreate(
     guildId: string,
-    channelId: string,
+    options: {
+      channelId: string,
+      preferredRegion?: string,
+    },
     callback?: Function,
   ): void {
     this.send(GatewayOpCodes.STREAM_CREATE, {
-      channel_id: channelId,
+      channel_id: options.channelId,
       guild_id: guildId,
+      preferred_region: options.preferredRegion,
       type: 'guild',
     }, callback);
   }
@@ -797,6 +809,7 @@ export class Socket extends EventSpewer {
     guildIds: Array<string> | string,
     options: {
       limit: number,
+      nonce?: string,
       presences?: boolean,
       query: string,
       userIds?: Array<string>,
@@ -806,6 +819,7 @@ export class Socket extends EventSpewer {
     this.send(GatewayOpCodes.REQUEST_GUILD_MEMBERS, {
       guild_id: guildIds,
       limit: options.limit,
+      nonce: options.nonce,
       presences: options.presences,
       query: options.query,
       user_ids: options.userIds,
@@ -856,6 +870,13 @@ export class Socket extends EventSpewer {
     this.send(GatewayOpCodes.STREAM_WATCH, {
       stream_key: streamKey,
     }, callback);
+  }
+
+  syncGuild(
+    guildIds: Array<string>,
+    callback?: Function,
+  ): void {
+    this.send(GatewayOpCodes.SYNC_GUILD, guildIds, callback);
   }
 
   updateGuildSubscriptions(
@@ -980,22 +1001,15 @@ export class Socket extends EventSpewer {
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
   on(event: 'killed', listener: () => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
-  on(event: 'packet', listener: (packet: GatewayPacket) => any): this;
+  on(event: 'packet', listener: (packet: GatewayPackets.Packet) => any): this;
   on(event: 'ready', listener: () => any): this;
   on(event: 'socket', listener: (socket: BaseSocket) => any): this;
-  on(event: 'state', listener: ({state}: {state: string}) => any): this;
+  on(event: 'state', listener: ({state}: {state: SocketStates}) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
   on(event: string | symbol, listener: (...args: any[]) => void): this {
     super.on(event, listener);
     return this;
   }
-}
-
-export interface GatewayPacket {
-  d: any,
-  op: number,
-  s: number,
-  t: string,
 }
 
 export interface IdentifyData {

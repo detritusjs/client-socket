@@ -23,6 +23,23 @@ export class DroppedPacketError extends BaseError {
   }
 }
 
+export class SocketKillError extends BaseError {
+  code: number;
+  reason: null | string;
+
+  constructor(code: number, reason?: null | string) {
+    let message: string;
+    if (reason) {
+      message = `Socket closed with ${code} (${reason}), killing.`;
+    } else {
+      message = `Socket closed with ${code}, killing.`;
+    }
+    super(message);
+    this.code = code;
+    this.reason = reason || null;
+  }
+}
+
 export class MediaPacketError extends BaseError {
   from: {
     address: string,

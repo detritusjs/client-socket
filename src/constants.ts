@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.4.6',
+  VERSION: '0.5.0',
 });
 
 function normalize(object: {[key: string]: any}) {
@@ -13,17 +13,22 @@ function normalize(object: {[key: string]: any}) {
 
 export const ApiVersions = Object.freeze({
   GATEWAY: 6,
-  MEDIA_GATEWAY: 4,
+  MEDIA_GATEWAY: 5,
 });
 
 export enum CompressTypes {
   NONE = 'none',
   PAYLOAD = 'payload',
   ZLIB = 'zlib-stream',
-  ZSTD = 'zstd-stream',
 }
 
 export const COMPRESS_TYPES = Object.freeze(Object.values(CompressTypes));
+
+export enum CryptoModules {
+  LIBSODIUM_WRAPPERS = 'libsodium-wrappers',
+  SODIUM = 'sodium',
+  TWEETNACL = 'tweetnacl',
+}
 
 export const DEFAULT_SHARD_COUNT = 1;
 export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
@@ -204,18 +209,18 @@ export const MaxNumbers = Object.freeze({
   UINT32: 0xFFFFFFFF,
 });
 
-export const MediaCodecTypes = Object.freeze({
-  AUDIO: 'audio',
-  VIDEO: 'video',
-});
+export enum MediaCodecTypes {
+  AUDIO = 'audio',
+  VIDEO = 'video',
+}
 
-export const MediaCodecs = Object.freeze({
-  OPUS: 'opus',
-  H264: 'H264',
-  VP8: 'VP8',
-  VP9: 'VP9',
-  RTX: 'rtx',
-});
+export enum MediaCodecs {
+  OPUS = 'opus',
+  H264 = 'H264',
+  VP8 = 'VP8',
+  VP9 = 'VP9',
+  RTX = 'rtx',
+}
 
 export const MEDIA_CODECS_AUDIO = [
   MediaCodecs.OPUS,
@@ -227,35 +232,36 @@ export const MEDIA_CODECS_VIDEO = [
   MediaCodecs.H264,
 ];
 
-export const MediaEncryptionModes = Object.freeze({
-  XSALSA20_POLY1305_LITE: 'xsalsa20_poly1305_lite',
-  XSALSA20_POLY1305_SUFFIX: 'xsalsa20_poly1305_suffix',
-  XSALSA20_POLY1305: 'xsalsa20_poly1305',
-});
+export enum MediaEncryptionModes {
+  XSALSA20_POLY1305_LITE = 'xsalsa20_poly1305_lite',
+  XSALSA20_POLY1305_SUFFIX = 'xsalsa20_poly1305_suffix',
+  XSALSA20_POLY1305 = 'xsalsa20_poly1305',
+}
 
 export const MEDIA_ENCRYPTION_MODES = Object.freeze(Object.values(MediaEncryptionModes));
 
-export const MediaOpCodes = Object.freeze({
-  IDENTIFY: 0,
-  SELECT_PROTOCOL: 1,
-  READY: 2,
-  HEARTBEAT: 3,
-  SELECT_PROTOCOL_ACK: 4,
-  SPEAKING: 5,
-  HEARTBEAT_ACK: 6,
-  RESUME: 7,
-  HELLO: 8,
-  RESUMED: 9,
-  SIGNAL: 10,
-  CLIENT_CONNECT: 12,
-  CLIENT_DISCONNECT: 13,
-  SESSION_UPDATE: 14,
-});
+export enum MediaOpCodes {
+  IDENTIFY = 0,
+  SELECT_PROTOCOL = 1,
+  READY = 2,
+  HEARTBEAT = 3,
+  SELECT_PROTOCOL_ACK = 4,
+  SPEAKING = 5,
+  HEARTBEAT_ACK = 6,
+  RESUME = 7,
+  HELLO = 8,
+  RESUMED = 9,
+  SIGNAL = 10,
+  CLIENT_CONNECT = 12,
+  CLIENT_DISCONNECT = 13,
+  SESSION_UPDATE = 14,
+  VIDEO_SINK_WANTS = 15,
+}
 
-export const MediaProtocols = Object.freeze({
-  UDP: 'udp',
-  WEBRTC: 'webrtc',
-});
+export enum MediaProtocols {
+  UDP = 'udp',
+  WEBRTC = 'webrtc',
+}
 
 export const MEDIA_PROTOCOLS = Object.freeze(Object.values(MediaProtocols));
 
@@ -266,70 +272,69 @@ export const MediaReceivedVideoQuality = Object.freeze({
 
 export const MediaSilencePacket = [0xF8, 0xFF, 0xFE];
 
-export const MediaSpeakingFlags = Object.freeze({
-  NONE: 0,
-  VOICE: 1 << 0,
-  SOUNDSHARE: 1 << 1,
-  PRIORITY: 1 << 2,
-});
+export enum MediaSpeakingFlags {
+  NONE = 0,
+  VOICE = 1 << 0,
+  SOUNDSHARE = 1 << 1,
+  PRIORITY = 1 << 2,
+}
 
-export const MediaSSRCTypes = Object.freeze({
-  AUDIO: 'audio',
-  VIDEO: 'video',
-});
+export enum MediaSSRCTypes {
+  AUDIO = 'audio',
+  VIDEO = 'video',
+}
 
-export const SocketEvents = Object.freeze({
-  CLOSE: 'close',
-  KILLED: 'killed',
-  LOG: 'log',
-  OPEN: 'open',
-  PACKET: 'packet',
-  READY: 'ready',
-  RECONNECTING: 'reconnecting',
-  SOCKET: 'socket',
-  STATE: 'state',
-  TRANSPORT: 'transport',
-  TRANSPORT_READY: 'transportReady',
-  WARN: 'warn',
-});
+export enum SocketEvents {
+  CLOSE = 'close',
+  KILLED = 'killed',
+  LOG = 'log',
+  OPEN = 'open',
+  PACKET = 'packet',
+  READY = 'ready',
+  RECONNECTING = 'reconnecting',
+  SOCKET = 'socket',
+  STATE = 'state',
+  TRANSPORT = 'transport',
+  TRANSPORT_READY = 'transportReady',
+  WARN = 'warn',
+}
 
-export const SocketEventsBase = Object.freeze({
-  CLOSE: 'close',
-  ERROR: 'error',
-  MESSAGE: 'message',
-  OPEN: 'open',
-  PING: 'ping',
-  PONG: 'pong',
-});
+export enum SocketEventsBase {
+  CLOSE = 'close',
+  ERROR = 'error',
+  MESSAGE = 'messsage',
+  OPEN = 'open',
+  PING = 'ping',
+  PONG = 'pong',
+}
 
-export const SocketCloseCodes = Object.freeze({
-  NORMAL: 1000,
-  GOING_AWAY: 1001,
-  PROTOCOL_ERROR: 1002,
-  UNSUPPORTED_DATA: 1003,
-  ABNORMAL_CLOSURE: 1006,
-  INVALID_FRAME: 1007,
-  POLICY_VIOLATION: 1008,
-  MESSAGE_TOO_BIG: 1009,
-  MISSING_EXTENSION: 1010,
-  INTERNAL_ERROR: 1011,
-  SERVICE_RESTART: 1012,
-  TRY_AGAIN_LATER: 1013,
-  BAD_GATEWAY: 1014,
-});
+export enum SocketCloseCodes {
+  NORMAL = 1000,
+  GOING_AWAY = 1001,
+  PROTOCOL_ERROR = 1002,
+  UNSUPPORTED_DATA = 1003,
 
-export const SocketInternalCloseCodes = Object.freeze({
-  INVALID_DATA: 4800,
-  RECONNECTING: 4801,
-  HEARTBEAT_ACK: 4802,
-  HEARTBEAT_ACK_NONCE: 4803,
-  OTHER_SOCKET_MESSAGE: 4804,
-  OTHER_SOCKET_OPEN: 4805,
-});
+  ABNORMAL_CLOSURE = 1006,
+  INVALID_FRAME = 1007,
+  POLICY_VIOLATION = 1008,
+  MESSAGE_TOO_BIG = 1009,
+  MISSING_EXTENSION = 1010,
+  INTERNAL_ERROR = 1011,
+  SERVICE_RESTART = 1012,
+  TRY_AGAIN_LATER = 1013,
+  BAD_GATEWAY = 1014,
+}
 
-export const SocketInternalCloseReasons: {
-  [key: number]: string | undefined,
-} = Object.freeze({
+export enum SocketInternalCloseCodes {
+  INVALID_DATA = 4800,
+  RECONNECTING = 4801,
+  HEARTBEAT_ACK = 4802,
+  HEARTBEAT_ACK_NONCE = 4803,
+  OTHER_SOCKET_MESSAGE = 4804,
+  OTHER_SOCKET_OPEN = 4805,
+}
+
+export const SocketInternalCloseReasons = Object.freeze({
   [SocketInternalCloseCodes.INVALID_DATA]: 'Invalid data received, reconnecting',
   [SocketInternalCloseCodes.RECONNECTING]: 'Reconnecting',
   [SocketInternalCloseCodes.HEARTBEAT_ACK]: 'Heartbeat ACK never arrived',
@@ -338,70 +343,72 @@ export const SocketInternalCloseReasons: {
   [SocketInternalCloseCodes.OTHER_SOCKET_OPEN]: 'Received open from not our current socket',
 });
 
-export const SocketGatewayCloseCodes = Object.freeze({
-  UNKNOWN_ERROR: 4000,
-  UNKNOWN_OPCODE: 4001,
-  DECODE_ERROR: 4002,
-  NOT_AUTHENTICATED: 4003,
-  AUTHENTICATION_FAILED: 4004,
-  ALREADY_AUTHENTICATED: 4005,
-  INVALID_SEQUENCE: 4007,
-  RATE_LIMITED: 4008,
-  SESSION_TIMEOUT: 4009,
-  INVALID_SHARD: 4010,
-  SHARDING_REQUIRED: 4011,
-  INVALID_INTENTS: 4012,
-});
+export enum SocketGatewayCloseCodes {
+  UNKNOWN_ERROR = 4000,
+  UNKNOWN_OPCODE = 4001,
+  DECODE_ERROR = 4002,
+  NOT_AUTHENTICATED = 4003,
+  AUTHENTICATION_FAILED = 4004,
+  ALREADY_AUTHENTICATED = 4005,
+  INVALID_SEQUENCE = 4007,
+  RATE_LIMITED = 4008,
+  SESSION_TIMEOUT = 4009,
+  INVALID_SHARD = 4010,
+  SHARDING_REQUIRED = 4011,
+  INVALID_VERSION = 4012,
+  INVALID_INTENTS = 4013,
+  DISALLOWED_INTENTS = 4014,
+};
 
-export const SocketMediaCloseCodes = Object.freeze({
-  UNKNOWN_ERROR: 4000,
-  UNKNOWN_OPCODE: 4001,
-  DECODE_ERROR: 4002,
-  NOT_AUTHENTICATED: 4003,
-  AUTHENTICATION_FAILED: 4004,
-  ALREADY_AUTHENTICATED: 4005,
-  SESSION_NO_LONGER_VALID: 4006,
-  SESSION_TIMEOUT: 4009,
-  SERVER_NOT_FOUND: 4011,
-  UNKNOWN_PROTOCOL: 4012,
-  DISCONNECTED: 4014,
-  VOICE_SERVER_CRASHED: 4015,
-  UNKNOWN_ENCRYPTION_MODE: 4016,
-});
+export enum SocketMediaCloseCodes {
+  UNKNOWN_ERROR = 4000,
+  UNKNOWN_OPCODE = 4001,
+  DECODE_ERROR = 4002,
+  NOT_AUTHENTICATED = 4003,
+  AUTHENTICATION_FAILED = 4004,
+  ALREADY_AUTHENTICATED = 4005,
+  SESSION_NO_LONGER_VALID = 4006,
+  SESSION_TIMEOUT = 4009,
 
-export const SocketStates = normalize({
-  CLOSED: null,
-  CONNECTING: null,
-  IDENTIFYING: null,
-  OPEN: null,
-  READY: null,
-  RESUMING: null,
-});
+  SERVER_NOT_FOUND = 4011,
+  UNKNOWN_PROTOCOL = 4012,
+  DISCONNECTED = 4014,
+  VOICE_SERVER_CRASHED = 4015,
+  UNKNOWN_ENCRYPTION_MODE = 4016,
+};
 
-export const SOCKET_STATES = Object.freeze(Object.values(SocketStates));
+export enum SocketStates {
+  CLOSED = 'CLOSED',
+  CONNECTING = 'CONNECTING',
+  IDENTIFYING = 'IDENTIFYING',
+  OPEN = 'OPEN',
+  READY = 'READY',
+  RESUMING = 'RESUMING',
+}
+
 
 export const RTP_HEADER_VERSION = 0x80;
 
-export const RTPPayloadTypes = Object.freeze({
-  OPUS: 0x78,
-  VP8: 0x65,
-  VP9: 0x67,
-  H264: 0x69,
-});
+export enum RTPPayloadTypes {
+  OPUS = 0x78,
+  VP8 = 0x65,
+  VP9 = 0x67,
+  H264 = 0x69,
+}
 
 export const RTP_PAYLOAD_TYPES = Object.freeze(Object.values(RTPPayloadTypes));
 
 export const RTCP_HEADER_VERSION = 0x80;
 
-export const RTCPPacketTypes = Object.freeze({
-  SENDER_REPORT: 200,
-  RECEIVER_REPORT: 201,
-  SOURCE_DESCRIPTION: 202,
-  BYE: 203,
-  APP: 204,
-  RTPFB: 205,
-  PSFB: 206,
-});
+export enum RTCPPacketTypes {
+  SENDER_REPORT = 200,
+  RECEIVER_REPORT = 201,
+  SOURCE_DESCRIPTION = 202,
+  BYE = 203,
+  APP = 204,
+  RTPFB = 205,
+  PSFB = 206,
+}
 
 export const RTCP_PACKET_TYPES = Object.freeze(Object.values(RTCPPacketTypes));
 

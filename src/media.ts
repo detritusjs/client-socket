@@ -4,6 +4,7 @@ import { BaseSocket } from './basesocket';
 import { Bucket } from './bucket';
 import {
   ApiVersions,
+  MediaEncryptionModes,
   MediaOpCodes,
   MediaProtocols,
   MediaSpeakingFlags,
@@ -16,15 +17,15 @@ import {
   SocketStates,
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
-  SOCKET_STATES,
 } from './constants';
 import { Socket as GatewaySocket } from './gateway';
 import { Socket as MediaUDPSocket } from './mediaudp';
+import { MediaGatewayPackets } from './types';
 
 
 export interface SocketOptions {
   channelId: string,
-  forceMode?: string,
+  forceMode?: MediaEncryptionModes | string,
   receive?: boolean,
   serverId: string,
   userId: string,
@@ -40,7 +41,7 @@ const defaultOptions = {
 };
 
 export class Socket extends EventSpewer {
-  readonly state: string = SocketStates.CLOSED;
+  readonly state: SocketStates = SocketStates.CLOSED;
 
   _heartbeat: {
     ack: boolean,
@@ -60,22 +61,20 @@ export class Socket extends EventSpewer {
   bucket = new Bucket(120, 60 * 1000);
   channelId: string;
   endpoint: null | string = null;
-  forceMode: null | string = null;
+  forceMode: MediaEncryptionModes | null = null;
   gateway: GatewaySocket;
   identified: boolean = false;
   killed: boolean = false;
   promises = new Set<{reject: Function, resolve: Function}>();
-  protocol: null | string = null;
+  protocol: MediaProtocols | null = null;
   ready: boolean = false;
   receiveEnabled: boolean = false;
   reconnects: number = 0;
   serverId: string;
   socket: BaseSocket | null = null;
-  ssrcs: {
-    [key: string]: Map<number, string>,
-  } = {
-    [MediaSSRCTypes.AUDIO]: new Map(),
-    [MediaSSRCTypes.VIDEO]: new Map(),
+  ssrcs = {
+    [MediaSSRCTypes.AUDIO]: new Map<number, string>(),
+    [MediaSSRCTypes.VIDEO]: new Map<number, string>(),
   };
   transport: MediaUDPSocket | null = null;
   token: null | string = null;
@@ -101,9 +100,9 @@ export class Socket extends EventSpewer {
       if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode)) {
         throw new Error('Unknown Encryption Mode');
       }
-      this.forceMode = options.forceMode;
+      this.forceMode = <MediaEncryptionModes> options.forceMode;
     }
-  
+
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
       channelId: {configurable: true, writable: false},
@@ -182,7 +181,7 @@ export class Socket extends EventSpewer {
     }
   }
 
-  setProtocol(value: string): void {
+  setProtocol(value: MediaProtocols): void {
     if (this.transport) {
       throw new Error('Cannot change protocols after transport connection.');
     }
@@ -195,8 +194,8 @@ export class Socket extends EventSpewer {
     Object.defineProperty(this, 'protocol', {value});
   }
 
-  setState(value: string): void {
-    if (SOCKET_STATES.includes(value) && value !== this.state) {
+  setState(value: SocketStates): void {
+    if (value in SocketStates && value !== this.state) {
       Object.defineProperty(this, 'state', {value});
       this.emit(SocketEvents.STATE, {state: value});
     }
@@ -212,10 +211,10 @@ export class Socket extends EventSpewer {
 
   ssrcToUserId(
     ssrc: number,
-    type: string = 'audio',
+    type: MediaSSRCTypes = MediaSSRCTypes.AUDIO,
   ): null | string {
     if (!(type in this.ssrcs)) {
-      throw new Error(`Invalid SSRC Type`);
+      throw new Error('Invalid SSRC Type');
     }
     if (this.ssrcs[type].has(ssrc)) {
       return <string> this.ssrcs[type].get(ssrc);
@@ -225,7 +224,7 @@ export class Socket extends EventSpewer {
 
   userIdToSSRC(
     userId: string,
-    type: 'audio' | 'video' = 'audio',
+    type: MediaSSRCTypes = MediaSSRCTypes.AUDIO,
   ): null | number {
     if (!(type in this.ssrcs)) {
       throw new Error(`Invalid SSRC Type`);
@@ -250,13 +249,18 @@ export class Socket extends EventSpewer {
 
     // unresumable events
     // 1000 Normal Disconnected
+    // 1001 Going Away
     // 4014 Voice Channel Kick/Deleted
-    if (
-      (code === SocketCloseCodes.NORMAL) ||
-      (code === SocketMediaCloseCodes.DISCONNECTED)
-    ) {
-      this.identified = false;
+    // 4015 Voice Server Crashed
+    switch (code) {
+      case SocketCloseCodes.NORMAL:
+      case SocketCloseCodes.GOING_AWAY:
+      case SocketMediaCloseCodes.DISCONNECTED:
+      case SocketMediaCloseCodes.VOICE_SERVER_CRASHED: {
+        this.identified = false;
+      }; break;
     }
+
     this._heartbeat.interval.stop();
     this._heartbeat.ack = false;
     this._heartbeat.lastAck = null;
@@ -307,7 +311,7 @@ export class Socket extends EventSpewer {
     this.cleanup(code);
     if (this.socket) {
       if (!reason && (code in SocketInternalCloseReasons)) {
-        reason = <string> SocketInternalCloseReasons[code];
+        reason = (<any> SocketInternalCloseReasons)[code];
       }
       this.socket.close(code, reason);
       this.socket = null;
@@ -330,11 +334,13 @@ export class Socket extends EventSpewer {
 
     switch (packet.op) {
       case MediaOpCodes.READY: {
+        const data: MediaGatewayPackets.Ready = packet.d;
+
         this.reconnects = 0;
         Object.defineProperty(this, 'ready', {value: true});
         this.identified = true;
         this.bucket.unlock();
-        this.transportConnect(packet.d);
+        this.transportConnect(data);
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
       }; break;
@@ -346,27 +352,33 @@ export class Socket extends EventSpewer {
         this.emit(SocketEvents.READY);
       }; break;
       case MediaOpCodes.CLIENT_CONNECT: {
-        this.ssrcs[MediaSSRCTypes.AUDIO].set(packet.d.audio_ssrc, packet.d.user_id);
-        if ('video_ssrc' in packet.d) {
-          this.ssrcs[MediaSSRCTypes.VIDEO].set(packet.d.video_ssrc, packet.d.user_id);
+        const data: MediaGatewayPackets.ClientConnect = packet.d;
+
+        this.ssrcs[MediaSSRCTypes.AUDIO].set(data.audio_ssrc, data.user_id);
+        if (data['video_ssrc'] !== undefined) {
+          this.ssrcs[MediaSSRCTypes.VIDEO].set(data.video_ssrc, data.user_id);
         }
         // start the user id's decode/encoders
       }; break;
       case MediaOpCodes.CLIENT_DISCONNECT: {
-        const audioSSRC = this.userIdToSSRC(packet.d.user_id, 'audio');
+        const data: MediaGatewayPackets.ClientDisconnect = packet.d;
+
+        const audioSSRC = this.userIdToSSRC(data.user_id, MediaSSRCTypes.AUDIO);
         if (audioSSRC !== null) {
           this.ssrcs[MediaSSRCTypes.AUDIO].delete(<number> audioSSRC);
         }
-        const videoSSRC = this.userIdToSSRC(packet.d.user_id, 'video');
+        const videoSSRC = this.userIdToSSRC(data.user_id, MediaSSRCTypes.VIDEO);
         if (videoSSRC !== null) {
           this.ssrcs[MediaSSRCTypes.VIDEO].delete(<number> videoSSRC);
         }
       }; break;
       case MediaOpCodes.HELLO: {
-        this.setHeartbeat(packet.d);
+        const data: MediaGatewayPackets.Hello = packet.d;
+        this.setHeartbeat(data);
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
-        if (packet.d !== this._heartbeat.nonce) {
+        const data: MediaGatewayPackets.HeartbeatAck = packet.d;
+        if (data !== this._heartbeat.nonce) {
           this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK_NONCE);
           this.connect();
           return;
@@ -376,50 +388,53 @@ export class Socket extends EventSpewer {
       }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
         if (this.protocol === MediaProtocols.UDP) {
-          const packetData: {
-            audio_codec: string,
-            mode: string,
-            media_session_id: string,
-            secret_key: Array<number>,
-            video_codec: string,
-          } = packet.d;
+          const {
+            audio_codec: audioCodec,
+            mode,
+            media_session_id: mediaSessionId,
+            secret_key: secretKey,
+            video_codec: videoCodec,
+          }: MediaGatewayPackets.SelectProtocolAckUDP = packet.d;
+
           (<MediaUDPSocket> this.transport)
-            .setAudioCodec(packetData.audio_codec)
-            .setVideoCodec(packetData.video_codec)
-            .setKey(packetData.secret_key)
-            .setMode(packetData.mode)
-            .setTransportId(packetData.media_session_id);
+            .setAudioCodec(audioCodec)
+            .setVideoCodec(videoCodec)
+            .setKey(secretKey)
+            .setMode(mode)
+            .setTransportId(mediaSessionId);
           this.emit(SocketEvents.TRANSPORT_READY, this.transport);
         } else if (this.protocol === MediaProtocols.WEBRTC) {
-          const data: {
-            audio_codec: string,
-            media_session_id: string,
-            sdp: string,
-            video_codec: string,
-          } = packet.d;
+          const data: MediaGatewayPackets.SelectProtocolAckWebRTC = packet.d;
         }
       }; break;
       case MediaOpCodes.SESSION_UPDATE: {
-        (<MediaUDPSocket> this.transport)
-          .setAudioCodec(packet.d.audio_codec)
-          .setVideoCodec(packet.d.video_codec)
-          .setTransportId(packet.d.media_session_id);
+        const {
+          audio_codec: audioCodec,
+          media_session_id: mediaSessionId,
+          video_codec: videoCodec,
+          video_quality_changes: videoQualityChanges,
+        }: MediaGatewayPackets.SessionUpdate = packet.d;
 
-        if (packet.d.video_quality_changes) {
-          packet.d.video_quality_changes.forEach((change: {
-            quality: string, // MediaReceivedVideoQuality
-            ssrc: number,
-            user_id: string,
-          }) => {
+        (<MediaUDPSocket> this.transport)
+          .setAudioCodec(audioCodec)
+          .setVideoCodec(videoCodec)
+          .setTransportId(mediaSessionId);
+
+        if (videoQualityChanges) {
+          videoQualityChanges.forEach((change) => {
 
           });
         }
       }; break;
       case MediaOpCodes.SPEAKING: {
-        this.ssrcs[MediaSSRCTypes.AUDIO].set(packet.d.ssrc, packet.d.user_id);
+        const data: MediaGatewayPackets.Speaking = packet.d;
+        this.ssrcs[MediaSSRCTypes.AUDIO].set(data.ssrc, data.user_id);
         // use the bitmasks Constants.Discord.SpeakingFlags
         // emit it?
         // check to see if it already existed, if not, create decode/encoders
+      }; break;
+      case MediaOpCodes.VIDEO_SINK_WANTS: {
+        const data: MediaGatewayPackets.VideoSinkWants = packet.d;
       }; break;
     }
   }
@@ -448,7 +463,7 @@ export class Socket extends EventSpewer {
   ) {
     let { code, reason } = event;
     if (!reason && (code in SocketInternalCloseReasons)) {
-      reason = <string> SocketInternalCloseReasons[code];
+      reason = (<any> SocketInternalCloseReasons)[code];
     }
     this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
@@ -558,9 +573,7 @@ export class Socket extends EventSpewer {
     }
   }
 
-  setHeartbeat(data: {
-    heartbeat_interval: number,
-  }): void {
+  setHeartbeat(data: MediaGatewayPackets.Hello): void {
     if (!data || !data.heartbeat_interval) {
       return;
     }
@@ -595,14 +608,7 @@ export class Socket extends EventSpewer {
     }, true);
   }
 
-  transportConnect(
-    data: {
-      ip: string,
-      port: number,
-      modes: Array<string>,
-      ssrc: number,
-    },
-  ): void {
+  transportConnect(data: MediaGatewayPackets.Ready): void {
     this.ssrcs[MediaSSRCTypes.AUDIO].set(
       data.ssrc,
       (<string> this.gateway.userId),
@@ -663,7 +669,8 @@ export class Socket extends EventSpewer {
         port: number,
         mode: string,
       },
-      protocol?: string,
+      experiments?: Array<any>,
+      protocol?: MediaProtocols | string,
       rtcConnectionId?: string,
     },
     callback?: Function,
@@ -674,6 +681,7 @@ export class Socket extends EventSpewer {
     const data = {
       codecs: options.codecs,
       data: options.data,
+      experiments: options.experiments,
       protocol: options.protocol,
       rtc_connection_id: options.rtcConnectionId,
     };
@@ -728,10 +736,10 @@ export class Socket extends EventSpewer {
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
   on(event: 'killed', listener: () => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
-  on(event: 'packet', listener: (packet: MediaGatewayPacket) => any): this;
+  on(event: 'packet', listener: (packet: MediaGatewayPackets.Packet) => any): this;
   on(event: 'ready', listener: () => any): this;
   on(event: 'socket', listener: (socket: BaseSocket) => any): this;
-  on(event: 'state', listener: ({state}: {state: string}) => any): this;
+  on(event: 'state', listener: ({state}: {state: SocketStates}) => any): this;
   on(event: 'transport', listener: (transport: MediaUDPSocket) => any): this;
   on(event: 'transportReady', listener: (transport: MediaUDPSocket) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
@@ -739,10 +747,4 @@ export class Socket extends EventSpewer {
     super.on(event, listener);
     return this;
   }
-}
-
-
-export interface MediaGatewayPacket {
-  op: number,
-  d: any,
 }

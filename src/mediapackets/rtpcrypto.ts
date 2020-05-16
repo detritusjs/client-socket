@@ -1,58 +1,82 @@
-export const CryptoModules = {
-  SODIUM_NATIVE: 'sodium-native',
-  TWEETNACL: 'tweetnacl',
-};
+import { CryptoModules } from '../constants';
 
 const PCrypto: {
   available: {[key: string]: any},
-  modules: Array<string>,
+  modules: Array<CryptoModules>,
+  using: CryptoModules | null,
 } = {
   available: {},
   modules: [
-    CryptoModules.SODIUM_NATIVE,
+    CryptoModules.SODIUM,
+    CryptoModules.LIBSODIUM_WRAPPERS,
     CryptoModules.TWEETNACL,
   ],
+  using: null,
 };
+// order in preference
 
-for (let name of PCrypto.modules) {
-  try {
-    PCrypto.available[name] = require(name);
-  } catch(error) {
-    continue;
+(async () => {
+  for (let name of PCrypto.modules) {
+    try {
+      const crypto = PCrypto.available[name] = require(name);
+      switch (name) {
+        case CryptoModules.LIBSODIUM_WRAPPERS: {
+          if (crypto.ready) {
+            await crypto.ready;
+          }
+        }; break;
+      }
+      break;
+    } catch(error) {
+      continue;
+    }
   }
+  PCrypto.using = PCrypto.modules.find((mod) => (mod in PCrypto.available)) || null;
+})();
+
+
+function Uint8ArrayToBuffer(array: Uint8Array, cache?: Buffer | null): Buffer {
+  if (cache) {
+    for (let i = 0; i < array.length; i++) {
+      cache[i] = array[i];
+    }
+    return cache;
+  }
+  return Buffer.from(array);
 }
 
-const defaultModule = PCrypto.modules.find((mod) => PCrypto.available[mod]);
-
 export default {
-  using: defaultModule,
-  get module(): any {
-    if (!defaultModule) {
+  get using(): CryptoModules {
+    if (!PCrypto.using) {
       throw new Error(`For media (video/voice) packing/unpacking, please install one of: ${JSON.stringify(PCrypto.modules)}`);
     }
-    return PCrypto.available[defaultModule];
+    return PCrypto.using;
   },
-  generateNonce(
-    cache?: Buffer | null,
-  ): Buffer {
+  get module(): any {
+    const crypto = PCrypto.available[this.using];
+    switch (this.using) {
+      case CryptoModules.SODIUM: {
+        return crypto.api;
+      };
+    }
+    return crypto;
+  },
+  generateNonce(cache?: Buffer | null): Buffer {
     const crypto = this.module;
 
     let nonce: Buffer;
-    switch (defaultModule) {
-      case CryptoModules.SODIUM_NATIVE: {
+    switch (this.using) {
+      case CryptoModules.LIBSODIUM_WRAPPERS: {
+        const generated: Uint8Array = crypto.randombytes_buf(crypto.crypto_secretbox_NONCEBYTES);
+        nonce = Uint8ArrayToBuffer(generated, cache);
+      }; break;
+      case CryptoModules.SODIUM: {
         nonce = cache || Buffer.alloc(crypto.crypto_secretbox_NONCEBYTES);
         crypto.randombytes_buf(nonce);
       }; break;
       case CryptoModules.TWEETNACL: {
-        nonce = crypto.randomBytes(crypto.box.nonceLength);
-        if (cache) {
-          for (let i = 0; i < nonce.length; i++) {
-            cache[i] = nonce[i];
-          }
-          nonce = cache;
-        } else {
-          nonce = Buffer.from(nonce);
-        }
+        const generated: Uint8Array = crypto.randomBytes(crypto.box.nonceLength);
+        nonce = Uint8ArrayToBuffer(generated, cache);
       }; break;
       default: {
         throw new Error(`For media (video/voice) packing/unpacking, please install one of: ${JSON.stringify(PCrypto.modules)}`);
@@ -73,31 +97,31 @@ export default {
 
     let length = 0;
     let packet: Buffer;
-    switch (defaultModule) {
-      case CryptoModules.SODIUM_NATIVE: {
+    switch (this.using) {
+      case CryptoModules.LIBSODIUM_WRAPPERS: {
         length += data.length + crypto.crypto_secretbox_MACBYTES;
         if (cache) {
           cache.fill(0, 0, length);
         }
-
-        packet = cache || Buffer.alloc(length);
-        crypto.crypto_secretbox_easy(packet, data, nonce, key);
+        const generated: Uint8Array = crypto.crypto_secretbox_easy(data, nonce, key);
+        packet = Uint8ArrayToBuffer(generated, cache);
+      }; break;
+      case CryptoModules.SODIUM: {
+        length += data.length + crypto.crypto_secretbox_MACBYTES;
+        if (cache) {
+          cache.fill(0, 0, length);
+        }
+        packet = crypto.crypto_secretbox_easy(data, nonce, key);
+        if (cache) {
+          packet.copy(cache);
+          packet = cache;
+        }
       }; break;
       case CryptoModules.TWEETNACL: {
         length += data.length + crypto.secretbox.overheadLength;
 
-        packet = crypto.secretbox(data, nonce, key);
-        if (packet) {
-          if (cache) {
-            cache.fill(0, 0, length);
-            for (let i = 0; i < length; i++) {
-              cache[i] = packet[i];
-            }
-            packet = cache;
-          } else {
-            packet = Buffer.from(packet);
-          }
-        }
+        const generated: Uint8Array = crypto.secretbox(data, nonce, key);
+        packet = Uint8ArrayToBuffer(generated, cache);
       }; break;
       default: {
         throw new Error(`For media (video/voice) packing/unpacking, please install one of: ${JSON.stringify(PCrypto.modules)}`);
@@ -113,15 +137,20 @@ export default {
     const crypto = this.module;
 
     let packet: Buffer | null = null;
-    switch (defaultModule) {
-      case CryptoModules.SODIUM_NATIVE: {
-        packet = Buffer.alloc(data.length - crypto.crypto_secretbox_MACBYTES);
-        crypto.crypto_secretbox_open_easy(packet, data, nonce, key);
+    switch (this.using) {
+      case CryptoModules.LIBSODIUM_WRAPPERS: {
+        const generated: null | Uint8Array = crypto.crypto_secretbox_open_easy(data, nonce, key);
+        if (generated) {
+          packet = Uint8ArrayToBuffer(generated);
+        }
+      }; break;
+      case CryptoModules.SODIUM: {
+        packet = crypto.crypto_secretbox_open_easy(data, nonce, key);
       }; break;
       case CryptoModules.TWEETNACL: {
-        packet = crypto.secretbox.open(data, nonce, key);
-        if (packet) {
-          packet = Buffer.from(packet);
+        const generated: null | Uint8Array = crypto.secretbox.open(data, nonce, key);
+        if (generated) {
+          packet = Uint8ArrayToBuffer(generated);
         }
       }; break;
     }
