@@ -81,6 +81,7 @@ export interface SocketOptions {
   reconnectMax?: number,
   shardCount?: number,
   shardId?: number,
+  onIdentifyCheck?: () => boolean | Promise<boolean>,
 }
 
 export class Socket extends EventSpewer {
@@ -126,6 +127,8 @@ export class Socket extends EventSpewer {
   url: URL | null = null;
   userId: null | string = null;
 
+  onIdentifyCheck?(): boolean | Promise<boolean>;
+
   constructor(
     token: string,
     options: SocketOptions = {},
@@ -154,6 +157,8 @@ export class Socket extends EventSpewer {
     this.shardCount = <number> options.shardCount;
     this.shardId = <number> options.shardId;
     this.token = token;
+
+    this.onIdentifyCheck = options.onIdentifyCheck || this.onIdentifyCheck;
 
     if (options.presence) {
       this.presence = Object.assign({}, defaultPresence, options.presence);
@@ -490,7 +495,7 @@ export class Socket extends EventSpewer {
         if (this.sessionId) {
           this.resume();
         } else {
-          this.identify();
+          this.identifyTry();
         }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
@@ -501,7 +506,7 @@ export class Socket extends EventSpewer {
           } else {
             this.sequence = 0;
             this.sessionId = null;
-            this.identify();
+            this.identifyTry();
           }
         }, Math.floor(Math.random() * 5 + 1) * 1000);
       }; break;
@@ -731,6 +736,12 @@ export class Socket extends EventSpewer {
     this.send(GatewayOpCodes.IDENTIFY, data, () => {
       this.setState(SocketStates.IDENTIFYING);
     }, true);
+  }
+
+  async identifyTry(): Promise<void> {
+    if (!this.onIdentifyCheck || (await Promise.resolve(this.onIdentifyCheck()))) {
+      this.identify();
+    }
   }
 
   resume(): void {
