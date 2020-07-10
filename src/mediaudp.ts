@@ -237,7 +237,7 @@ export class Socket extends EventSpewer {
   setMode(
     value: string,
   ): Socket {
-    if (!MEDIA_ENCRYPTION_MODES.includes(value)) {
+    if (!MEDIA_ENCRYPTION_MODES.includes(value as MediaEncryptionModes)) {
       throw new Error(`Encryption mode '${value}' is not supported.`);
     }
     Object.defineProperty(this, 'mode', {value});

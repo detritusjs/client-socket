@@ -97,10 +97,10 @@ export class Socket extends EventSpewer {
     this.videoEnabled = !!options.video;
 
     if (options.forceMode !== undefined) {
-      if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode)) {
+      if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode as MediaEncryptionModes)) {
         throw new Error('Unknown Encryption Mode');
       }
-      this.forceMode = <MediaEncryptionModes> options.forceMode;
+      this.forceMode = options.forceMode as MediaEncryptionModes;
     }
 
     Object.defineProperties(this, {
@@ -249,12 +249,10 @@ export class Socket extends EventSpewer {
 
     // unresumable events
     // 1000 Normal Disconnected
-    // 1001 Going Away
     // 4014 Voice Channel Kick/Deleted
     // 4015 Voice Server Crashed
     switch (code) {
       case SocketCloseCodes.NORMAL:
-      case SocketCloseCodes.GOING_AWAY:
       case SocketMediaCloseCodes.DISCONNECTED:
       case SocketMediaCloseCodes.VOICE_SERVER_CRASHED: {
         this.identified = false;
@@ -626,25 +624,26 @@ export class Socket extends EventSpewer {
     }
 
     if (this.protocol === MediaProtocols.UDP) {
-      let mode: null | string = null;
+      let mode: null | MediaEncryptionModes = null;
       if (this.forceMode && MEDIA_ENCRYPTION_MODES.includes(this.forceMode)) {
         mode = this.forceMode;
-      }
-      if (mode === null) {
-        for (let m of data.modes) {
+      } else {
+        for (let value of data.modes) {
+          let m = value as MediaEncryptionModes;
           if (MEDIA_ENCRYPTION_MODES.includes(m)) {
             mode = m;
             break;
           }
         }
       }
+      let transport = this.transport as MediaUDPSocket;
       if (mode) {
-        (<MediaUDPSocket> this.transport).setMode(mode);
-        (<MediaUDPSocket> this.transport).setSSRC(data.ssrc);
-        (<MediaUDPSocket> this.transport).connect(data.ip, data.port);
-        this.emit(SocketEvents.TRANSPORT, this.transport);
+        transport.setMode(mode);
+        transport.setSSRC(data.ssrc);
+        transport.connect(data.ip, data.port);
+        this.emit(SocketEvents.TRANSPORT, transport);
       } else {
-        (<MediaUDPSocket> this.transport).disconnect();
+        transport.disconnect();
         this.transport = null;
         this.emit(SocketEvents.WARN, new Error(`No supported voice mode found in ${JSON.stringify(data.modes)}`));
       }
