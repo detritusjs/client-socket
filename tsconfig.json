@@ -8,5 +8,10 @@
     "strict": true
   },
   "include": ["src"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules"],
+  "typedocOptions": {
+    "mode": "file",
+    "name": "Detritus Socket Client",
+    "out": "./docs"
+  }
 }

@@ -1,5 +1,10 @@
-# websocket
-a low level wrapper over discord's gateway and voice websocket
+# Detritus Client Socket
+![npm](https://img.shields.io/npm/v/detritus-client-socket?style=flat-square)
+
+A pure-TypeScript low-level wrapper for just Discord's Gateway and Voice Connection.
+
+- [API Documentation](https://socket.detritusjs.com)
+- [npm](https://www.npmjs.com/package/detritus-client-socket)
 
 ## usage
 ```js
