@@ -367,7 +367,7 @@ export class Socket extends EventSpewer {
     }
 
     // un-resumable events
-    // 1000, 1001
+    // 1000
     // un-resumable and kill socket
     // 4004 Authentication Failed
     // 4010 Invalid Shard Sent
@@ -375,8 +375,7 @@ export class Socket extends EventSpewer {
     // 4012 Invalid Gateway Version
     // 4013 Invalid Intents Sent
     switch (code) {
-      case SocketCloseCodes.NORMAL:
-      case SocketCloseCodes.GOING_AWAY: {
+      case SocketCloseCodes.NORMAL: {
         this.sequence = 0;
         this.sessionId = null;
       }; break;
