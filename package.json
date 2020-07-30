@@ -1,6 +1,6 @@
 {
   "name": "detritus-client-socket",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A TypeScript NodeJS library to interact with Discord's Gateway",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -8,11 +8,11 @@
     "lib/**/*"
   ],
   "dependencies": {
-    "detritus-utils": "^0.2.6",
+    "detritus-utils": "^0.3.0",
     "ws": "^7.3.1"
   },
   "devDependencies": {
-    "@types/node": "^12.12.51",
+    "@types/node": "^14.0.27",
     "typedoc": "^0.17.8",
     "typescript": "^3.9.7"
   },
