@@ -302,7 +302,7 @@ export enum SocketEvents {
 export enum SocketEventsBase {
   CLOSE = 'close',
   ERROR = 'error',
-  MESSAGE = 'messsage',
+  MESSAGE = 'message',
   OPEN = 'open',
   PING = 'ping',
   PONG = 'pong',
