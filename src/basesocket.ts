@@ -5,17 +5,18 @@ import {
   SocketEventsBase,
 } from './constants';
 
-export const DependencyTypes = Object.freeze({
-  UWS: 'uws',
-  WS: 'ws',
-});
+
+export enum DependencyTypes {
+  UWS = 'uws',
+  WS = 'ws',
+}
 
 export const WebsocketDependency: {
   module: any,
-  type: string,
+  type: null | DependencyTypes,
 } = {
   module: null,
-  type: '',
+  type: null,
 };
 
 [
@@ -68,7 +69,10 @@ export class BaseSocket extends EventSpewer {
     return this.socket.readyState === this.socket.CONNECTING;
   }
 
-  get using(): string {
+  get using(): DependencyTypes {
+    if (!WebsocketDependency.type) {
+      throw new Error(`Missing a WebSocket Dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`);
+    }
     return WebsocketDependency.type;
   }
 
@@ -136,5 +140,9 @@ export class BaseSocket extends EventSpewer {
         resolve(Math.round(Date.now() - now));
       });
     });
+  }
+
+  terminate() {
+    return this.socket.terminate();
   }
 }

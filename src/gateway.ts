@@ -21,6 +21,7 @@ import {
   Package,
   SocketCloseCodes,
   SocketEvents,
+  SocketEventsBase,
   SocketGatewayCloseCodes,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
@@ -29,6 +30,7 @@ import {
   DEFAULT_SHARD_COUNT,
   DEFAULT_SHARD_LAUNCH_DELAY,
   DEFAULT_VOICE_TIMEOUT,
+  GATEWAY_INTENTS_ALL,
 } from './constants';
 
 
@@ -74,7 +76,7 @@ export interface SocketOptions {
   encoding?: string,
   guildSubscriptions?: boolean,
   identifyProperties?: IdentifyDataProperties,
-  intents?: Array<number> | Array<string> | string | number,
+  intents: Array<number> | Array<string> | string | number,
   largeThreshold?: number,
   presence?: PresenceOptions,
   reconnectDelay?: number,
@@ -109,7 +111,7 @@ export class Socket extends EventSpewer {
   encoding: EncodingTypes;
   guildSubscriptions: boolean;
   identifyProperties: IdentifyDataProperties = Object.assign({}, IdentifyProperties);
-  intents?: number;
+  intents: number = GATEWAY_INTENTS_ALL;
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
@@ -131,7 +133,7 @@ export class Socket extends EventSpewer {
 
   constructor(
     token: string,
-    options: SocketOptions = {},
+    options: SocketOptions = {intents: GATEWAY_INTENTS_ALL},
   ) {
     super();
 
@@ -147,15 +149,15 @@ export class Socket extends EventSpewer {
     }
 
     this.autoReconnect = !!options.autoReconnect;
-    this.compress = <CompressTypes> (<string> options.compress).toLowerCase();
-    this.encoding = <EncodingTypes> (<string> options.encoding).toLowerCase();
-    this.disabledEvents = <Array<string>> options.disabledEvents;
+    this.compress = (options.compress as string).toLowerCase() as CompressTypes;
+    this.encoding = (options.encoding as string).toLowerCase() as EncodingTypes;
+    this.disabledEvents = options.disabledEvents as Array<string>;
     this.guildSubscriptions = !!options.guildSubscriptions;
-    this.largeThreshold = <number> options.largeThreshold;
-    this.reconnectDelay = <number> options.reconnectDelay;
-    this.reconnectMax = <number> options.reconnectMax;
-    this.shardCount = <number> options.shardCount;
-    this.shardId = <number> options.shardId;
+    this.largeThreshold = options.largeThreshold as number;
+    this.reconnectDelay = options.reconnectDelay as number;
+    this.reconnectMax = options.reconnectMax as number;
+    this.shardCount = options.shardCount as number;
+    this.shardId = options.shardId as number;
     this.token = token;
 
     this.onIdentifyCheck = options.onIdentifyCheck || this.onIdentifyCheck;
@@ -205,18 +207,21 @@ export class Socket extends EventSpewer {
 
     if (options.intents !== undefined) {
       this.intents = 0;
-
-      const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
-      for (let intent of intents) {
-        if (typeof(intent) === 'string') {
-          intent = intent.toUpperCase();
-          if (intent in GatewayIntents) {
-            this.intents |= (<any> GatewayIntents)[intent];
+      if (options.intents === '*') {
+        this.intents = GATEWAY_INTENTS_ALL;
+      } else {
+        const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
+        for (let intent of intents) {
+          if (typeof(intent) === 'string') {
+            intent = intent.toUpperCase();
+            if (intent in GatewayIntents) {
+              this.intents |= (GatewayIntents as any)[intent];
+            }
+          } else if (typeof(intent) === 'number') {
+            this.intents |= intent;
+          } else {
+            throw new Error(`Invalid intent received: ${intent}`);
           }
-        } else if (typeof(intent) === 'number') {
-          this.intents |= intent;
-        } else {
-          throw new Error(`Invalid intent received: ${intent}`);
         }
       }
     }
@@ -409,7 +414,7 @@ export class Socket extends EventSpewer {
       throw new Error('Socket requires a url to connect to.');
     }
 
-    this.url = new URL('', <string | URL> url);
+    this.url = new URL('', url as string | URL);
     this.url.searchParams.set('encoding', this.encoding);
     this.url.searchParams.set('v', String(ApiVersions.GATEWAY));
     this.url.pathname = this.url.pathname || '/';
@@ -420,13 +425,14 @@ export class Socket extends EventSpewer {
       }; break;
     }
 
-    const ws = this.socket = new BaseSocket(this.url.href);
+    this.socket = new BaseSocket(this.url.href);
+    this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this, this.socket));
+    this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
+    this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
+    this.socket.on(SocketEventsBase.OPEN, this.onOpen.bind(this, this.socket));
+
     this.setState(SocketStates.CONNECTING);
-    this.emit(SocketEvents.SOCKET, ws);
-    ws.socket.onclose = this.onClose.bind(this, ws);
-    ws.socket.onerror = this.onError.bind(this, ws);
-    ws.socket.onmessage = this.onMessage.bind(this, ws);
-    ws.socket.onopen = this.onOpen.bind(this, ws);
+    this.emit(SocketEvents.SOCKET, this.socket);
   }
 
   decode(
@@ -461,7 +467,7 @@ export class Socket extends EventSpewer {
     this.cleanup(code, reason);
     if (this.socket) {
       if (!reason && (code in SocketInternalCloseReasons)) {
-        reason = (<any> SocketInternalCloseReasons)[code];
+        reason = (SocketInternalCloseReasons as any)[code];
       }
       this.socket.close(code, reason);
       this.socket = null;
@@ -545,9 +551,9 @@ export class Socket extends EventSpewer {
         this.emit(SocketEvents.READY);
       }; break;
       case GatewayDispatchEvents.GUILD_DELETE: {
-        const serverId = <string> data['id'];
+        const serverId = data['id'] as string;
         if (this.mediaGateways.has(serverId)) {
-          const mGateway = <MediaSocket> this.mediaGateways.get(serverId);
+          const mGateway = this.mediaGateways.get(serverId) as MediaSocket;
           if (data['unavailable']) {
             mGateway.kill(new Error('The guild this voice was connected to became unavailable'));
           } else {
@@ -556,22 +562,22 @@ export class Socket extends EventSpewer {
         }
       }; break;
       case GatewayDispatchEvents.VOICE_SERVER_UPDATE: {
-        const serverId = <string> (data['guild_id'] || data['channel_id']);
+        const serverId = (data['guild_id'] || data['channel_id']) as string;
         if (this.mediaGateways.has(serverId)) {
-          const gateway = <MediaSocket> this.mediaGateways.get(serverId);
+          const gateway = this.mediaGateways.get(serverId) as MediaSocket;
           gateway.setEndpoint(data['endpoint']);
           gateway.setToken(data['token']);
         }
       }; break;
       case GatewayDispatchEvents.VOICE_STATE_UPDATE: {
-        const userId = <string> data['user_id'];
+        const userId = data['user_id'] as string;
         if (userId !== this.userId) {
           // not our voice state update
           return;
         }
-        const serverId = <string> (data['guild_id'] || data['channel_id']);
+        const serverId = (data['guild_id'] || data['channel_id']) as string;
         if (this.mediaGateways.has(serverId)) {
-          const gateway = <MediaSocket> this.mediaGateways.get(serverId);
+          const gateway = this.mediaGateways.get(serverId) as MediaSocket;
           if (!data['channel_id']) {
             gateway.kill();
           } else if (gateway.sessionId !== data['session_id']) {
@@ -599,11 +605,14 @@ export class Socket extends EventSpewer {
 
   onClose(
     target: BaseSocket,
-    event: {code: number, reason: string},
+    code?: number,
+    reason?: string,
   ) {
-    let { code, reason } = event;
+    if (code === undefined) {
+      code = SocketInternalCloseCodes.CONNECTION_ERROR;
+    }
     if (!reason && (code in SocketInternalCloseReasons)) {
-      reason = (<any> SocketInternalCloseReasons)[code];
+      reason = (SocketInternalCloseReasons as any)[code];
     }
     this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
@@ -625,17 +634,16 @@ export class Socket extends EventSpewer {
 
   onError(
     target: BaseSocket,
-    event: {error: any} | any,
+    error: Error,
   ) {
-    this.emit(SocketEvents.WARN, event.error);
+    this.emit(SocketEvents.WARN, error);
   }
 
   onMessage(
     target: BaseSocket,
-    event: {data: any, type: string},
+    data: any,
   ) {
     if (this.socket === target) {
-      const { data } = event;
       this.handle(data);
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE);
@@ -652,10 +660,10 @@ export class Socket extends EventSpewer {
   }
 
   async ping(timeout?: number): Promise<any> {
-    if (!this.connected) {
+    if (!this.connected || !this.socket) {
       throw new Error('Socket is still initializing!');
     }
-    return (<BaseSocket> this.socket).ping(timeout);
+    return this.socket.ping(timeout);
   }
 
   send(
@@ -680,8 +688,8 @@ export class Socket extends EventSpewer {
     }
     if (data !== undefined) {
       if (direct) {
-        if (this.connected) {
-          (<BaseSocket> this.socket).send(data, callback);
+        if (this.connected && this.socket) {
+          this.socket.send(data, callback);
         } else {
           this.emit(SocketEvents.WARN, new DroppedPacketError(packet, 'Socket isn\'t connected'));
         }
@@ -694,7 +702,7 @@ export class Socket extends EventSpewer {
             this.bucket.add(throttled, true);
           } else {
             try {
-              (<BaseSocket> this.socket).send(data, callback);
+              (this.socket as BaseSocket).send(data, callback);
             } catch(error) {
               this.emit(SocketEvents.WARN, error);
             }
@@ -836,6 +844,27 @@ export class Socket extends EventSpewer {
     }, callback);
   }
 
+  requestApplicationCommands(
+    guildId: string,
+    options: {
+      applicationId?: string,
+      applications: boolean,
+      limit?: number,
+      nonce: string,
+      offset?: number,
+      query?: string,
+    },
+  ): void {
+    this.send(GatewayOpCodes.REQUEST_APPLICATION_COMMANDS, {
+      application_id: options.applicationId,
+      guild_id: guildId,
+      limit: options.limit,
+      nonce: options.nonce,
+      offset: options.offset,
+      query: options.query,
+    });
+  }
+
   setPresence(
     options: PresenceOptions = {},
     callback?: Function,
@@ -961,10 +990,10 @@ export class Socket extends EventSpewer {
       options.video = options.selfVideo;
     }
 
-    const serverId = <string> (guildId || channelId);
+    const serverId = (guildId || channelId) as string;
     let gateway: MediaSocket;
     if (this.mediaGateways.has(serverId)) {
-      gateway = <MediaSocket> this.mediaGateways.get(serverId);
+      gateway = this.mediaGateways.get(serverId) as MediaSocket;
       if (!channelId) {
         gateway.kill();
         return null;
