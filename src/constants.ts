@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.7.0',
+  VERSION: '0.7.1',
 });
 
 
@@ -187,7 +187,23 @@ export const GATEWAY_INTENTS_ALL = [
   GatewayIntents.DIRECT_MESSAGE_TYPING,
 ].reduce((x, total) => total | x);
 
-export const GATEWAY_INTENTS_DIRECT_MESSAGES = [
+export const GATEWAY_INTENTS_ALL_UNPRIVILEGED = [
+  GatewayIntents.GUILDS,
+  GatewayIntents.GUILD_BANS,
+  GatewayIntents.GUILD_EMOJIS,
+  GatewayIntents.GUILD_INTEGRATIONS,
+  GatewayIntents.GUILD_WEBHOOKS,
+  GatewayIntents.GUILD_INVITES,
+  GatewayIntents.GUILD_VOICE_STATES,
+  GatewayIntents.GUILD_MESSAGES,
+  GatewayIntents.GUILD_MESSAGE_REACTIONS,
+  GatewayIntents.GUILD_MESSAGE_TYPING,
+  GatewayIntents.DIRECT_MESSAGES,
+  GatewayIntents.DIRECT_MESSAGE_REACTIONS,
+  GatewayIntents.DIRECT_MESSAGE_TYPING,
+].reduce((x, total) => total | x);
+
+export const GATEWAY_INTENTS_ALL_DIRECT_MESSAGES = [
   GatewayIntents.DIRECT_MESSAGES,
   GatewayIntents.DIRECT_MESSAGE_REACTIONS,
   GatewayIntents.DIRECT_MESSAGE_TYPING,
@@ -207,6 +223,7 @@ export const GATEWAY_INTENTS_ALL_GUILD = [
   GatewayIntents.GUILD_MESSAGE_REACTIONS,
   GatewayIntents.GUILD_MESSAGE_TYPING,
 ].reduce((x, total) => total | x);
+
 
 export enum GatewayOpCodes {
   DISPATCH = 0,

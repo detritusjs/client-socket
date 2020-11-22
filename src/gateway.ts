@@ -31,6 +31,7 @@ import {
   DEFAULT_SHARD_LAUNCH_DELAY,
   DEFAULT_VOICE_TIMEOUT,
   GATEWAY_INTENTS_ALL,
+  GATEWAY_INTENTS_ALL_UNPRIVILEGED,
 } from './constants';
 
 
@@ -111,7 +112,7 @@ export class Socket extends EventSpewer {
   encoding: EncodingTypes;
   guildSubscriptions: boolean;
   identifyProperties: IdentifyDataProperties = Object.assign({}, IdentifyProperties);
-  intents: number = GATEWAY_INTENTS_ALL;
+  intents: number = GATEWAY_INTENTS_ALL_UNPRIVILEGED;
   killed: boolean = false;
   largeThreshold: number;
   mediaGateways = new BaseCollection<string, MediaSocket>();
@@ -133,7 +134,7 @@ export class Socket extends EventSpewer {
 
   constructor(
     token: string,
-    options: SocketOptions = {intents: GATEWAY_INTENTS_ALL},
+    options: SocketOptions = {intents: GATEWAY_INTENTS_ALL_UNPRIVILEGED},
   ) {
     super();
 
@@ -207,8 +208,10 @@ export class Socket extends EventSpewer {
 
     if (options.intents !== undefined) {
       this.intents = 0;
-      if (options.intents === '*') {
+      if (options.intents === 'ALL') {
         this.intents = GATEWAY_INTENTS_ALL;
+      } else if (options.intents === 'ALL_UNPRIVILEGED') {
+        this.intents = GATEWAY_INTENTS_ALL_UNPRIVILEGED;
       } else {
         const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
         for (let intent of intents) {
