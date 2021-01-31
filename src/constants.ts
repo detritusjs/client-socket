@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.7.1',
+  VERSION: '0.7.2',
 });
 
 
@@ -99,6 +99,7 @@ export enum GatewayDispatchEvents {
   GUILD_ROLE_CREATE = 'GUILD_ROLE_CREATE',
   GUILD_ROLE_DELETE = 'GUILD_ROLE_DELETE',
   GUILD_ROLE_UPDATE = 'GUILD_ROLE_UPDATE',
+  INTERACTION_CREATE = 'INTERACTION_CREATE',
   INVITE_CREATE = 'INVITE_CREATE',
   INVITE_DELETE = 'INVITE_DELETE',
   LIBRARY_APPLICATION_UPDATE = 'LIBRARY_APPLICATION_UPDATE',
