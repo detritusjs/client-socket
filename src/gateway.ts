@@ -56,6 +56,7 @@ const defaultOptions = Object.freeze({
   compress: true,
   encoding: (Dependencies.Erlpack) ? EncodingTypes.ETF : EncodingTypes.JSON,
   guildSubscriptions: true,
+  intents: GATEWAY_INTENTS_ALL_UNPRIVILEGED,
   largeThreshold: 250,
   presence: null,
   reconnectDelay: DEFAULT_SHARD_LAUNCH_DELAY,
@@ -77,7 +78,7 @@ export interface SocketOptions {
   encoding?: string,
   guildSubscriptions?: boolean,
   identifyProperties?: IdentifyDataProperties,
-  intents: Array<number> | Array<string> | string | number,
+  intents?: Array<number> | Array<string> | string | number,
   largeThreshold?: number,
   presence?: PresenceOptions,
   reconnectDelay?: number,
@@ -134,7 +135,7 @@ export class Socket extends EventSpewer {
 
   constructor(
     token: string,
-    options: SocketOptions = {intents: GATEWAY_INTENTS_ALL_UNPRIVILEGED},
+    options: SocketOptions = {},
   ) {
     super();
 
@@ -382,20 +383,24 @@ export class Socket extends EventSpewer {
     // 4011 Sharding Required
     // 4012 Invalid Gateway Version
     // 4013 Invalid Intents Sent
-    switch (code) {
-      case SocketCloseCodes.NORMAL: {
-        this.sequence = 0;
-        this.sessionId = null;
-      }; break;
-      case SocketGatewayCloseCodes.AUTHENTICATION_FAILED:
-      case SocketGatewayCloseCodes.INVALID_SHARD:
-      case SocketGatewayCloseCodes.SHARDING_REQUIRED:
-      case SocketGatewayCloseCodes.INVALID_VERSION:
-      case SocketGatewayCloseCodes.INVALID_INTENTS:
-      case SocketGatewayCloseCodes.DISALLOWED_INTENTS: {
-        this.kill(new SocketKillError(code, reason));
-      }; break;
+    if (code !== undefined) {
+      code = parseInt(code as string);
+      switch (code) {
+        case SocketCloseCodes.NORMAL: {
+          this.sequence = 0;
+          this.sessionId = null;
+        }; break;
+        case SocketGatewayCloseCodes.AUTHENTICATION_FAILED:
+        case SocketGatewayCloseCodes.INVALID_SHARD:
+        case SocketGatewayCloseCodes.SHARDING_REQUIRED:
+        case SocketGatewayCloseCodes.INVALID_VERSION:
+        case SocketGatewayCloseCodes.INVALID_INTENTS:
+        case SocketGatewayCloseCodes.DISALLOWED_INTENTS: {
+          this.kill(new SocketKillError(code, reason));
+        }; break;
+      }
     }
+
     this._heartbeat.interval.stop();
     this._heartbeat.ack = false;
     this._heartbeat.lastAck = null;
