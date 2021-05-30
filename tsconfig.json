@@ -12,6 +12,9 @@
   "typedocOptions": {
     "mode": "file",
     "name": "Detritus Socket Client",
-    "out": "./docs"
+    "out": "./docs",
+    "entryPoints": [
+      "./src"
+    ]
   }
 }
