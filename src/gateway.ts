@@ -433,11 +433,26 @@ export class Socket extends EventSpewer {
       }; break;
     }
 
-    this.socket = new BaseSocket(this.url.href);
-    this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this, this.socket));
-    this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
-    this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
-    this.socket.on(SocketEventsBase.OPEN, this.onOpen.bind(this, this.socket));
+    try {
+      this.socket = new BaseSocket(this.url.href);
+      this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this, this.socket));
+      this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
+      this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
+      this.socket.on(SocketEventsBase.OPEN, this.onOpen.bind(this, this.socket));
+    } catch(error) {
+      this.socket = null;
+      if (this.autoReconnect && !this.killed) {
+        if (this.reconnectMax < this.reconnects) {
+          this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
+        } else {
+          this.emit(SocketEvents.RECONNECTING);
+          setTimeout(() => {
+            this.connect(url);
+            this.reconnects++;
+          }, this.reconnectDelay);
+        }
+      }
+    }
 
     this.setState(SocketStates.CONNECTING);
     this.emit(SocketEvents.SOCKET, this.socket);
