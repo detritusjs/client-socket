@@ -2,7 +2,7 @@ import { EventSpewer } from 'detritus-utils';
 
 import { InflateError } from '../errors';
 
-const DependencyTypes = Object.freeze({
+export const DependencyTypes = Object.freeze({
   PAKO: 'pako',
   ZLIB: 'zlib',
 });
@@ -11,7 +11,7 @@ const ErrorCodes = Object.freeze({
   ERR_ZLIB_BINDING_CLOSED: 'ERR_ZLIB_BINDING_CLOSED',
 });
 
-const Inflate = {
+export const Inflate = {
   flushCode: 0,
   module: null as any,
   type: DependencyTypes.ZLIB,
