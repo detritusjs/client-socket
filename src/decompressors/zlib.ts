@@ -13,7 +13,7 @@ const ErrorCodes = Object.freeze({
 
 const Inflate = {
   flushCode: 0,
-  module: null,
+  module: null as any,
   type: DependencyTypes.ZLIB,
 };
 
