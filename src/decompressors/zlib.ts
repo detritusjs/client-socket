@@ -19,7 +19,7 @@ const Inflate = {
 
 for (let type of [DependencyTypes.ZLIB, DependencyTypes.PAKO]) {
   try {
-    Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
+    Inflate.flushCode = Inflate.module!.constants.Z_SYNC_FLUSH;
     Inflate.module = require(type);
     Inflate.type = type;
     break;
@@ -78,12 +78,12 @@ export class ZlibDecompressor extends EventSpewer {
     this.close();
     switch (Inflate.type) {
       case DependencyTypes.PAKO: {
-        this.inflate = new Inflate.module.Inflate({
+        this.inflate = new Inflate.module!.Inflate({
           chunkSize: this.chunkSize,
         });
       }; break;
       case DependencyTypes.ZLIB: {
-        this.inflate = Inflate.module.createInflate({
+        this.inflate = Inflate.module!.createInflate({
           chunkSize: this.chunkSize,
           flush: Inflate.flushCode,
         });
