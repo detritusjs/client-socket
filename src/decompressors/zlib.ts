@@ -13,15 +13,16 @@ const ErrorCodes = Object.freeze({
 
 const Inflate = {
   flushCode: 0,
-  module: require(DependencyTypes.ZLIB),
+  module: null,
   type: DependencyTypes.ZLIB,
 };
 
-Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
-for (let type of [DependencyTypes.PAKO]) {
+for (let type of [DependencyTypes.ZLIB, DependencyTypes.PAKO]) {
   try {
+    Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
     Inflate.module = require(type);
     Inflate.type = type;
+    break;
   } catch(e) {}
 }
 
@@ -39,6 +40,10 @@ export class ZlibDecompressor extends EventSpewer {
     chunkSize: number = 64 * 1024,
   ) {
     super();
+
+    if (!Inflate.module) {
+      throw new Error(`Missing zlib dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`)
+    }
 
     this.chunkSize = chunkSize;
     this.suffix = suffix;
