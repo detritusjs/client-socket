@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.8.2-beta.0',
+  VERSION: '0.8.2',
 });
 
 
