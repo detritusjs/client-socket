@@ -1,6 +1,6 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.8.2',
+  VERSION: '0.8.3-beta.0',
 });
 
 
@@ -443,7 +443,7 @@ export enum SocketGatewayCloseCodes {
   INVALID_VERSION = 4012,
   INVALID_INTENTS = 4013,
   DISALLOWED_INTENTS = 4014,
-};
+}
 
 export enum SocketMediaCloseCodes {
   UNKNOWN_ERROR = 4000,
@@ -460,7 +460,7 @@ export enum SocketMediaCloseCodes {
   DISCONNECTED = 4014,
   VOICE_SERVER_CRASHED = 4015,
   UNKNOWN_ENCRYPTION_MODE = 4016,
-};
+}
 
 export enum SocketStates {
   CLOSED = 'CLOSED',

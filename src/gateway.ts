@@ -762,6 +762,10 @@ export class Socket extends EventSpewer {
   }
 
   identify(): void {
+    if (this.state !== SocketStates.OPEN) {
+      return;
+    }
+
     const data = this.getIdentifyData();
     this.send(GatewayOpCodes.IDENTIFY, data, () => {
       this.setState(SocketStates.IDENTIFYING);
