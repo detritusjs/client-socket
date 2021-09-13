@@ -518,7 +518,7 @@ export class Socket extends EventSpewer {
     if (!this.connected) {
       throw new Error('Socket is still initializing!');
     }
-    return (<BaseSocket> this.socket).ping(timeout);
+    return this.socket!.ping(timeout);
   }
 
   send(
@@ -537,7 +537,7 @@ export class Socket extends EventSpewer {
     }
 
     if (direct) {
-      (<BaseSocket> this.socket).send(data, callback);
+      this.socket!.send(data, callback);
     } else {
       const throttled = () => {
         if (this.bucket.locked || !this.identified || !this.connected) {
@@ -548,7 +548,7 @@ export class Socket extends EventSpewer {
           return;
         }
         try {
-          (<BaseSocket> this.socket).send(data, callback);
+          this.socket!.send(data, callback);
         } catch(error) {
           this.emit(SocketEvents.WARN, error);
         }

@@ -151,8 +151,8 @@ export class Socket extends EventSpewer {
     }
 
     this.autoReconnect = !!options.autoReconnect;
-    this.compress = (options.compress as string).toLowerCase() as CompressTypes;
-    this.encoding = (options.encoding as string).toLowerCase() as EncodingTypes;
+    this.compress = options.compress!.toLowerCase() as CompressTypes;
+    this.encoding = options.encoding!.toLowerCase() as EncodingTypes;
     this.disabledEvents = options.disabledEvents as Array<string>;
     this.guildSubscriptions = !!options.guildSubscriptions;
     this.largeThreshold = options.largeThreshold as number;
@@ -528,6 +528,11 @@ export class Socket extends EventSpewer {
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
         const shouldResume: GatewayPackets.InvalidSession = packet.d;
+        if (shouldResume) {
+          this.setState(SocketStates.RESUMING);
+        } else {
+          this.setState(SocketStates.OPEN);
+        }
         setTimeout(() => {
           if (shouldResume) {
             this.resume();
@@ -762,7 +767,7 @@ export class Socket extends EventSpewer {
   }
 
   identify(): void {
-    if (this.state !== SocketStates.OPEN) {
+    if (this.state !== SocketStates.OPEN && this.state !== SocketStates.RESUMING) {
       return;
     }
 
@@ -1017,10 +1022,10 @@ export class Socket extends EventSpewer {
       options.video = options.selfVideo;
     }
 
-    const serverId = (guildId || channelId) as string;
+    const serverId = (guildId || channelId)!;
     let gateway: MediaSocket;
     if (this.mediaGateways.has(serverId)) {
-      gateway = this.mediaGateways.get(serverId) as MediaSocket;
+      gateway = this.mediaGateways.get(serverId)!;
       if (!channelId) {
         gateway.kill();
         return null;
