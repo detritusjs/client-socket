@@ -585,6 +585,10 @@ export class Socket extends EventSpewer {
   }
 
   identify(): void {
+    if (this.state !== SocketStates.OPEN) {
+      return;
+    }
+
     this.send(MediaOpCodes.IDENTIFY, {
       server_id: this.serverId,
       session_id: this.sessionId,
