@@ -529,19 +529,19 @@ export class Socket extends EventSpewer {
       case GatewayOpCodes.INVALID_SESSION: {
         const shouldResume: GatewayPackets.InvalidSession = packet.d;
         if (shouldResume) {
-          this.setState(SocketStates.RESUMING);
+          this.resume();
         } else {
           this.setState(SocketStates.OPEN);
+          this.sequence = 0;
+          this.sessionId = null;
+
+          const socket = this.socket;
+          setTimeout(() => {
+            if (this.socket === socket) {
+              this.identifyTry();
+            }
+          }, Math.floor(Math.random() * 5 + 1) * 1000);
         }
-        setTimeout(() => {
-          if (shouldResume) {
-            this.resume();
-          } else {
-            this.sequence = 0;
-            this.sessionId = null;
-            this.identifyTry();
-          }
-        }, Math.floor(Math.random() * 5 + 1) * 1000);
       }; break;
       case GatewayOpCodes.RECONNECT: {
         this.disconnect(SocketInternalCloseCodes.RECONNECTING);
