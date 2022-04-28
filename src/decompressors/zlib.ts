@@ -16,14 +16,21 @@ const Inflate = {
   module: require(DependencyTypes.ZLIB),
   type: DependencyTypes.ZLIB,
 };
-
 Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
-for (let type of [DependencyTypes.PAKO]) {
+
+// disable pako for now
+for (let type of []) {
   try {
     Inflate.module = require(type);
     Inflate.type = type;
   } catch(e) {}
 }
+
+switch (Inflate.type) {
+  case DependencyTypes.PAKO: Inflate.module.constants.Z_SYNC_FLUSH; break;
+  case DependencyTypes.ZLIB: Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH; break;
+}
+
 
 export class ZlibDecompressor extends EventSpewer {
   dataChunks: Array<Buffer> = [];
@@ -106,7 +113,7 @@ export class ZlibDecompressor extends EventSpewer {
       return;
     }
 
-    const chunk = <Buffer> this.chunks.shift();
+    const chunk = this.chunks.shift()!;
     const isEnd = (
       (this.suffix.length <= chunk.length) &&
       (chunk.slice(-this.suffix.length).equals(this.suffix))
@@ -116,6 +123,7 @@ export class ZlibDecompressor extends EventSpewer {
       case DependencyTypes.PAKO: {
         this.inflate.push(chunk, isEnd && Inflate.flushCode);
         if (isEnd) {
+          // pako 2.0.0 fricked things up, it ignores our flush code as well as broke our implementation
           if (this.inflate.err) {
             const error = new InflateError(this.inflate.msg, this.inflate.err);
             this.onError(error);

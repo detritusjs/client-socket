@@ -670,6 +670,7 @@ export class Socket extends EventSpewer {
   onMessage(
     target: BaseSocket,
     data: any,
+    isBinary?: boolean,
   ) {
     if (this.socket === target) {
       this.handle(data);
