@@ -282,7 +282,7 @@ export class Socket extends EventSpewer {
       }
   
       this.local.ip = packet.slice(8, packet.indexOf(0, 8)).toString();
-      this.local.port = packet.readUIntLE(packet.length - 2, 2);
+      this.local.port = packet.readUIntBE(packet.length - 2, 2);
 
       const codecs: Array<{
         name: string,
