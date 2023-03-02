@@ -276,12 +276,12 @@ export class Socket extends EventSpewer {
     const socket = this.socket = dgram.createSocket('udp4');
     this.emit(SocketEvents.SOCKET, socket);
     socket.once('message', (packet: Buffer) => {
-      if (this.ssrc !== packet.readUInt32LE(0)) {
+      if (this.ssrc !== packet.readUInt32BE(4)) {
         this.emit(SocketEvents.WARN, new Error('SSRC mismatch in ip discovery packet'));
         return;
       }
   
-      this.local.ip = packet.slice(4, packet.indexOf(0, 4)).toString();
+      this.local.ip = packet.slice(8, packet.indexOf(0, 8)).toString();
       this.local.port = packet.readUIntLE(packet.length - 2, 2);
 
       const codecs: Array<{
@@ -358,8 +358,10 @@ export class Socket extends EventSpewer {
 
     this.connected = true;
 
-    const ipDiscovery = Buffer.alloc(70);
-    ipDiscovery.writeUIntBE(this.ssrc, 0, 4);
+    const ipDiscovery = Buffer.alloc(74);
+    ipDiscovery.writeUIntBE(1, 0, 2);
+    ipDiscovery.writeUIntBE(70, 2, 2);
+    ipDiscovery.writeUIntBE(this.ssrc, 4, 4);
     this.send(ipDiscovery);
     return this;
   }
