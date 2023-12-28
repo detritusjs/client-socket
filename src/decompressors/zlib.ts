@@ -2,7 +2,8 @@ import { EventSpewer } from 'detritus-utils';
 
 import { InflateError } from '../errors';
 
-const DependencyTypes = Object.freeze({
+
+export const DependencyTypes = Object.freeze({
   PAKO: 'pako',
   ZLIB: 'zlib',
 });
@@ -11,24 +12,28 @@ const ErrorCodes = Object.freeze({
   ERR_ZLIB_BINDING_CLOSED: 'ERR_ZLIB_BINDING_CLOSED',
 });
 
-const Inflate = {
+export const Inflate: {
+  flushCode: number,
+  module: any,
+  type: string,
+} = {
   flushCode: 0,
-  module: require(DependencyTypes.ZLIB),
+  module: null,
   type: DependencyTypes.ZLIB,
 };
-Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH;
 
 // disable pako for now
-for (let type of []) {
+for (let type of [DependencyTypes.ZLIB]) {
   try {
     Inflate.module = require(type);
     Inflate.type = type;
+    break;
   } catch(e) {}
 }
 
 switch (Inflate.type) {
-  case DependencyTypes.PAKO: Inflate.module.constants.Z_SYNC_FLUSH; break;
-  case DependencyTypes.ZLIB: Inflate.flushCode = Inflate.module.constants.Z_SYNC_FLUSH; break;
+  case DependencyTypes.PAKO: Inflate.module!.constants.Z_SYNC_FLUSH; break;
+  case DependencyTypes.ZLIB: Inflate.flushCode = Inflate.module!.constants.Z_SYNC_FLUSH; break;
 }
 
 
@@ -46,6 +51,10 @@ export class ZlibDecompressor extends EventSpewer {
     chunkSize: number = 64 * 1024,
   ) {
     super();
+
+    if (!Inflate.module) {
+      throw new Error(`Missing zlib dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`)
+    }
 
     this.chunkSize = chunkSize;
     this.suffix = suffix;
@@ -80,12 +89,12 @@ export class ZlibDecompressor extends EventSpewer {
     this.close();
     switch (Inflate.type) {
       case DependencyTypes.PAKO: {
-        this.inflate = new Inflate.module.Inflate({
+        this.inflate = new Inflate.module!.Inflate({
           chunkSize: this.chunkSize,
         });
       }; break;
       case DependencyTypes.ZLIB: {
-        this.inflate = Inflate.module.createInflate({
+        this.inflate = Inflate.module!.createInflate({
           chunkSize: this.chunkSize,
           flush: Inflate.flushCode,
         });

@@ -108,7 +108,7 @@ export namespace MediaGatewayPackets {
     user_id: string,
   }
 
-  export interface VideoSinkWants {
+  export interface MediaSinkWants {
     any: number,
   }
 }

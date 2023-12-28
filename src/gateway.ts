@@ -121,6 +121,7 @@ export class Socket extends EventSpewer {
   reconnectDelay: number;
   reconnectMax: number;
   reconnects: number = 0;
+  resumeGatewayUrl: null | string = null;
   resuming: boolean = false;
   sequence: number = 0;
   sessionId: null | string = null;
@@ -172,9 +173,6 @@ export class Socket extends EventSpewer {
 
     if (!COMPRESS_TYPES.includes(this.compress)) {
       throw new Error(`Compress type must be of: '${COMPRESS_TYPES.join(', ')}'`);
-    }
-    if (this.compress === CompressTypes.PAYLOAD) {
-      throw new Error(`Compress type '${this.compress}' is currently not supported.`);
     }
 
     if (this.shardCount <= this.shardId) {
@@ -285,6 +283,7 @@ export class Socket extends EventSpewer {
         const raw: RawPresenceActivity = {
           application_id: activity.applicationId,
           assets: undefined,
+          buttons: activity.buttons,
           details: activity.details,
           emoji: undefined,
           flags: activity.flags,
@@ -343,8 +342,6 @@ export class Socket extends EventSpewer {
 
   getIdentifyData(): IdentifyData {
     const data: IdentifyData = {
-      /* payload compression, rather use transport compression, using the get params overrides this */
-      compress: (this.compress === CompressTypes.PAYLOAD),
       guild_subscriptions: this.guildSubscriptions,
       intents: this.intents,
       large_threshold: this.largeThreshold,
@@ -416,7 +413,11 @@ export class Socket extends EventSpewer {
       this.disconnect();
     }
     if (!url) {
-      url = this.url;
+      if (this.resumeGatewayUrl) {
+        url = this.resumeGatewayUrl;
+      } else {
+        url = this.url;
+      }
     }
     if (!url) {
       throw new Error('Socket requires a url to connect to.');
@@ -566,6 +567,7 @@ export class Socket extends EventSpewer {
         this.bucket.unlock();
         this.reconnects = 0;
         this.discordTrace = data['_trace'];
+        this.resumeGatewayUrl = data['resume_gateway_url'];
         this.sessionId = data['session_id'];
         this.userId = data['user']['id'];
         this.setState(SocketStates.READY);
@@ -1121,6 +1123,7 @@ export interface RawPresenceActivity {
     small_image?: string,
     small_text?: string,
   },
+  buttons?: Array<string>,
   details?: string,
   emoji?: {
     animated: boolean,
@@ -1175,6 +1178,7 @@ export interface PresenceActivityOptions {
     smallImage?: string,
     smallText?: string,
   },
+  buttons?: Array<string>,
   details?: string,
   emoji?: {
     animated: boolean,

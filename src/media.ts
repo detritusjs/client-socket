@@ -431,8 +431,8 @@ export class Socket extends EventSpewer {
         // emit it?
         // check to see if it already existed, if not, create decode/encoders
       }; break;
-      case MediaOpCodes.VIDEO_SINK_WANTS: {
-        const data: MediaGatewayPackets.VideoSinkWants = packet.d;
+      case MediaOpCodes.MEDIA_SINK_WANTS: {
+        const data: MediaGatewayPackets.MediaSinkWants = packet.d;
       }; break;
     }
   }

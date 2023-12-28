@@ -1,24 +1,19 @@
 {
   "name": "detritus-client-socket",
-  "version": "0.8.4-beta.2",
+  "version": "0.9.0-beta.2",
   "description": "A TypeScript NodeJS library to interact with Discord's Gateway",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "files": [
-    "lib/**/*"
+    "lib/**"
   ],
   "dependencies": {
     "detritus-utils": "^0.4.0",
-    "ws": "^8.5.0"
-  },
-  "devDependencies": {
-    "@types/node": "^17.0.29"
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.16.0"
   },
   "peerDependencies": {
     "erlpack": "^0.1.4",
-    "libsodium-wrappers": "^0.7.10",
-    "sodium": "^3.0.2",
-    "tweetnacl": "^1.0.3",
     "uws": "10.148.1"
   },
   "peerDependenciesMeta": {
@@ -60,5 +55,8 @@
   "bugs": {
     "url": "https://github.com/detritusjs/client-socket/issues"
   },
-  "homepage": "https://github.com/detritusjs/client-socket#readme"
+  "homepage": "https://github.com/detritusjs/client-socket#readme",
+  "devDependencies": {
+    "@types/node": "^20.10.5"
+  }
 }
