@@ -1,7 +1,7 @@
 const {
   Constants,
   Gateway,
-} = require('../lib');
+} = require('../../lib');
 
 
 const guildId = '';
@@ -32,11 +32,17 @@ client.on('open', () => {
 client.on('ready', async () => {
   const media = await client.voiceConnect(guildId, channelId, {receive: true});
   media.on('warn', console.error);
+  // fires again after reconnects, but the transport (and our listeners on it) gets reused
+  let isSetup = false;
   media.on('transportReady', (transport) => {
     media.sendSpeaking({voice: true});
 
     // send an audio silence frame to start receiving media
     transport.sendAudioSilenceFrame();
+    if (isSetup) {
+      return;
+    }
+    isSetup = true;
     transport.on('packet', (packet) => {
       if (packet.userId === repeatUserId) {
         transport.sendAudioFrame(packet.data, {

@@ -43,8 +43,14 @@ export namespace GatewayPackets {
 
 export namespace MediaGatewayPackets {
   export interface Packet {
+    binary?: boolean,
     d: any,
     op: number,
+    seq?: number,
+  }
+
+  export interface ClientsConnect {
+    user_ids: Array<string>,
   }
 
   export interface ClientConnect {
@@ -62,7 +68,9 @@ export namespace MediaGatewayPackets {
     v: number,
   }
 
-  export type HeartbeatAck = number;
+  export interface HeartbeatAck {
+    t: number,
+  }
 
   export interface Ready {
     experiments: Array<string>,
@@ -78,6 +86,7 @@ export namespace MediaGatewayPackets {
 
   export interface SelectProtocolAckUDP {
     audio_codec: string,
+    dave_protocol_version?: number,
     mode: string,
     media_session_id: string,
     secret_key: Array<number>,
@@ -110,5 +119,19 @@ export namespace MediaGatewayPackets {
 
   export interface MediaSinkWants {
     any: number,
+  }
+
+  export interface DavePrepareTransition {
+    protocol_version: number,
+    transition_id: number,
+  }
+
+  export interface DaveExecuteTransition {
+    transition_id: number,
+  }
+
+  export interface DavePrepareEpoch {
+    epoch: number,
+    protocol_version: number,
   }
 }

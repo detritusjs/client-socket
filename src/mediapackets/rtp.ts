@@ -1,5 +1,5 @@
 import { MaxNumbers } from '../constants';
-import { default as RTPCrypto } from './rtpcrypto';
+import { RTP_NONCE_LENGTH } from './rtpcrypto';
 
 export const ValidRTPVersion = 2;
 
@@ -286,7 +286,7 @@ export class RTPNonce {
       randomize?: boolean,
     } = {},
   ) {
-    this.buffer = Buffer.alloc(24);
+    this.buffer = Buffer.alloc(RTP_NONCE_LENGTH);
     Object.defineProperty(this, 'buffer', {enumerable: false, writable: false});
 
     if (options.randomize || options.randomize === undefined) {
@@ -305,10 +305,6 @@ export class RTPNonce {
     sourceEnd?: number,
   ): number {
     return this.buffer.copy(target, targetStart, sourceStart, sourceEnd);
-  }
-
-  generate(): Buffer {
-    return RTPCrypto.generateNonce(this.buffer);
   }
 
   randomize(): Buffer {

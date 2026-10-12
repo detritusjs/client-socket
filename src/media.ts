@@ -19,7 +19,9 @@ import {
   MEDIA_PROTOCOLS,
 } from './constants';
 import { Socket as GatewaySocket } from './gateway';
+import { DaveSession } from './mediadave';
 import { Socket as MediaUDPSocket } from './mediaudp';
+import RTPCrypto from './mediapackets/rtpcrypto';
 import { MediaGatewayPackets } from './types';
 
 
@@ -60,6 +62,8 @@ export class Socket extends EventSpewer {
   };
   bucket = new Bucket(120, 60 * 1000);
   channelId: string;
+  connectedUserIds = new Set<string>();
+  dave: DaveSession | null = null;
   endpoint: null | string = null;
   forceMode: MediaEncryptionModes | null = null;
   gateway: GatewaySocket;
@@ -70,6 +74,8 @@ export class Socket extends EventSpewer {
   ready: boolean = false;
   receiveEnabled: boolean = false;
   reconnects: number = 0;
+  // last sequence number received from the server, sent back as `seq_ack`
+  sequence: number = -1;
   serverId: string;
   socket: BaseSocket | null = null;
   ssrcs = {
@@ -97,7 +103,7 @@ export class Socket extends EventSpewer {
     this.videoEnabled = !!options.video;
 
     if (options.forceMode !== undefined) {
-      if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode as MediaEncryptionModes)) {
+      if (!MEDIA_ENCRYPTION_MODES.includes(options.forceMode as MediaEncryptionModes) || !RTPCrypto.isModeAvailable(options.forceMode)) {
         throw new Error('Unknown Encryption Mode');
       }
       this.forceMode = options.forceMode as MediaEncryptionModes;
@@ -169,8 +175,15 @@ export class Socket extends EventSpewer {
     });
   }
 
+  get voicePrivacyCode(): null | string {
+    return (this.dave) ? this.dave.voicePrivacyCode : null;
+  }
+
   setChannelId(value: string): void {
     Object.defineProperty(this, 'channelId', {value});
+    if (this.dave) {
+      this.dave.setChannelId(value);
+    }
   }
 
   setEndpoint(value: string): void {
@@ -249,14 +262,23 @@ export class Socket extends EventSpewer {
 
     // unresumable events
     // 1000 Normal Disconnected
+    // 4006 Session No Longer Valid
     // 4014 Voice Channel Kick/Deleted
-    // 4015 Voice Server Crashed
+    // 4021 Rate Limited
+    // 4022 Call Terminated
     switch (code) {
       case SocketCloseCodes.NORMAL:
+      case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID:
       case SocketMediaCloseCodes.DISCONNECTED:
-      case SocketMediaCloseCodes.VOICE_SERVER_CRASHED: {
+      case SocketMediaCloseCodes.RATE_LIMITED:
+      case SocketMediaCloseCodes.CALL_TERMINATED: {
         this.identified = false;
       }; break;
+    }
+    if (!this.identified) {
+      this.sequence = -1;
+      this.connectedUserIds.clear();
+      this.destroyDave();
     }
 
     this._heartbeat.interval.stop();
@@ -326,8 +348,16 @@ export class Socket extends EventSpewer {
   }
 
   handle(data: any): void {
+    if (typeof(data) !== 'string') {
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      return this.handleBinary(buffer);
+    }
+
     const packet = this.decode(data);
     if (!packet) {return;}
+    if (typeof(packet.seq) === 'number') {
+      this.sequence = packet.seq;
+    }
     this.emit(SocketEvents.PACKET, packet);
 
     switch (packet.op) {
@@ -349,9 +379,16 @@ export class Socket extends EventSpewer {
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
       }; break;
+      case MediaOpCodes.CLIENTS_CONNECT: {
+        const data: MediaGatewayPackets.ClientsConnect = packet.d;
+        for (let userId of data.user_ids) {
+          this.connectedUserIds.add(userId);
+        }
+      }; break;
       case MediaOpCodes.CLIENT_CONNECT: {
         const data: MediaGatewayPackets.ClientConnect = packet.d;
 
+        this.connectedUserIds.add(data.user_id);
         this.ssrcs[MediaSSRCTypes.AUDIO].set(data.audio_ssrc, data.user_id);
         if (data['video_ssrc'] !== undefined) {
           this.ssrcs[MediaSSRCTypes.VIDEO].set(data.video_ssrc, data.user_id);
@@ -361,6 +398,7 @@ export class Socket extends EventSpewer {
       case MediaOpCodes.CLIENT_DISCONNECT: {
         const data: MediaGatewayPackets.ClientDisconnect = packet.d;
 
+        this.connectedUserIds.delete(data.user_id);
         const audioSSRC = this.userIdToSSRC(data.user_id, MediaSSRCTypes.AUDIO);
         if (audioSSRC !== null) {
           this.ssrcs[MediaSSRCTypes.AUDIO].delete(<number> audioSSRC);
@@ -376,7 +414,8 @@ export class Socket extends EventSpewer {
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
         const data: MediaGatewayPackets.HeartbeatAck = packet.d;
-        if (data !== this._heartbeat.nonce) {
+        const nonce = (data && typeof(data) === 'object') ? data.t : data;
+        if (nonce !== this._heartbeat.nonce) {
           this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK_NONCE);
           this.connect();
           return;
@@ -388,11 +427,14 @@ export class Socket extends EventSpewer {
         if (this.protocol === MediaProtocols.UDP) {
           const {
             audio_codec: audioCodec,
+            dave_protocol_version: daveProtocolVersion,
             mode,
             media_session_id: mediaSessionId,
             secret_key: secretKey,
             video_codec: videoCodec,
           }: MediaGatewayPackets.SelectProtocolAckUDP = packet.d;
+
+          this.setupDave(daveProtocolVersion || 0);
 
           (<MediaUDPSocket> this.transport)
             .setAudioCodec(audioCodec)
@@ -434,6 +476,99 @@ export class Socket extends EventSpewer {
       case MediaOpCodes.MEDIA_SINK_WANTS: {
         const data: MediaGatewayPackets.MediaSinkWants = packet.d;
       }; break;
+      case MediaOpCodes.DAVE_PREPARE_TRANSITION: {
+        const data: MediaGatewayPackets.DavePrepareTransition = packet.d;
+        if (this.dave) {
+          const sendReady = this.dave.prepareTransition(data.transition_id, data.protocol_version);
+          if (sendReady) {
+            this.sendDaveTransitionReady(data.transition_id);
+          }
+        }
+      }; break;
+      case MediaOpCodes.DAVE_EXECUTE_TRANSITION: {
+        const data: MediaGatewayPackets.DaveExecuteTransition = packet.d;
+        if (this.dave) {
+          this.dave.executeTransition(data.transition_id);
+        }
+      }; break;
+      case MediaOpCodes.DAVE_PREPARE_EPOCH: {
+        const data: MediaGatewayPackets.DavePrepareEpoch = packet.d;
+        if (this.dave) {
+          this.dave.prepareEpoch(data.epoch, data.protocol_version);
+        }
+      }; break;
+    }
+  }
+
+  handleBinary(buffer: Buffer): void {
+    // server binary messages: uint16 sequence | uint8 opcode | payload
+    if (buffer.length < 3) {
+      this.emit(SocketEvents.WARN, new Error('Received a binary message that\'s too small to be valid'));
+      return;
+    }
+    const seq = buffer.readUInt16BE(0);
+    const op = buffer.readUInt8(2);
+    const payload = buffer.subarray(3);
+    this.sequence = seq;
+    this.emit(SocketEvents.PACKET, {op, d: payload, seq, binary: true});
+
+    const dave = this.dave;
+    if (!dave) {
+      return;
+    }
+    try {
+      switch (op) {
+        case MediaOpCodes.DAVE_MLS_EXTERNAL_SENDER: {
+          dave.setExternalSender(payload);
+        }; break;
+        case MediaOpCodes.DAVE_MLS_PROPOSALS: {
+          const commitWelcome = dave.processProposals(payload, this.connectedUserIds);
+          if (commitWelcome) {
+            this.sendBinary(MediaOpCodes.DAVE_MLS_COMMIT_WELCOME, commitWelcome);
+          }
+        }; break;
+        case MediaOpCodes.DAVE_MLS_ANNOUNCE_COMMIT_TRANSITION: {
+          const { success, transitionId } = dave.processCommit(payload);
+          if (success && transitionId !== 0) {
+            this.sendDaveTransitionReady(transitionId);
+          }
+        }; break;
+        case MediaOpCodes.DAVE_MLS_WELCOME: {
+          const { success, transitionId } = dave.processWelcome(payload);
+          if (success && transitionId !== 0) {
+            this.sendDaveTransitionReady(transitionId);
+          }
+        }; break;
+      }
+    } catch(error) {
+      this.emit(SocketEvents.WARN, error);
+    }
+  }
+
+  setupDave(protocolVersion: number): void {
+    if (!protocolVersion && !this.dave) {
+      return;
+    }
+    if (this.dave) {
+      this.dave.protocolVersion = protocolVersion;
+      this.dave.reinit();
+      return;
+    }
+    const dave = this.dave = new DaveSession(protocolVersion, this.userId, this.channelId);
+    dave.on('invalidateTransition', (transitionId: number) => {
+      this.send(MediaOpCodes.DAVE_MLS_INVALID_COMMIT_WELCOME, {transition_id: transitionId});
+    });
+    dave.on('keyPackage', (keyPackage: Buffer) => {
+      this.sendBinary(MediaOpCodes.DAVE_MLS_KEY_PACKAGE, keyPackage);
+    });
+    dave.on('warn', (error: Error) => this.emit(SocketEvents.WARN, error));
+    dave.reinit();
+  }
+
+  destroyDave(): void {
+    if (this.dave) {
+      this.dave.destroy();
+      this.dave = null;
     }
   }
 
@@ -450,6 +585,7 @@ export class Socket extends EventSpewer {
       this.transport.removeAllListeners();
       this.transport = null;
     }
+    this.destroyDave();
     this.resolvePromises(error || new Error('Media Gateway was killed.'));
     this.emit(SocketEvents.KILLED);
     this.removeAllListeners();
@@ -467,6 +603,21 @@ export class Socket extends EventSpewer {
     if (!this.socket || this.socket === target) {
       this.setState(SocketStates.CLOSED);
       this.cleanup(code);
+      switch (code) {
+        case SocketMediaCloseCodes.DAVE_PROTOCOL_REQUIRED: {
+          const error = (DaveSession.available) ?
+            new Error('Voice channel requires the DAVE protocol (E2EE)') :
+            new Error('Voice channel requires the DAVE protocol (E2EE), please install @snazzah/davey');
+          this.kill(error);
+          return;
+        };
+        case SocketMediaCloseCodes.DISCONNECTED:
+        case SocketMediaCloseCodes.RATE_LIMITED:
+        case SocketMediaCloseCodes.CALL_TERMINATED: {
+          // should not reconnect, the main gateway will either send a new VOICE_SERVER_UPDATE (reconnects) or a VOICE_STATE_UPDATE (kills)
+          return;
+        };
+      }
       if (this.gateway.autoReconnect && !this.killed) {
         if (this.gateway.reconnectMax < this.reconnects) {
           this.kill();
@@ -557,6 +708,23 @@ export class Socket extends EventSpewer {
     }
   }
 
+  sendBinary(
+    op: number,
+    payload: Buffer,
+    callback?: Function,
+  ): void {
+    if (!this.connected) {
+      return;
+    }
+    // client binary messages: uint8 opcode | payload
+    const data = Buffer.concat([Buffer.from([op]), payload]);
+    this.socket!.send(data, callback);
+  }
+
+  sendDaveTransitionReady(transitionId: number, callback?: Function): void {
+    this.send(MediaOpCodes.DAVE_TRANSITION_READY, {transition_id: transitionId}, callback);
+  }
+
   heartbeat(
     fromInterval: boolean = false,
   ): void {
@@ -567,7 +735,10 @@ export class Socket extends EventSpewer {
       this._heartbeat.ack = false;
       this._heartbeat.lastSent = Date.now();
       this._heartbeat.nonce = Date.now();
-      this.send(MediaOpCodes.HEARTBEAT, this._heartbeat.nonce, undefined, true);
+      this.send(MediaOpCodes.HEARTBEAT, {
+        t: this._heartbeat.nonce,
+        seq_ack: this.sequence,
+      }, undefined, true);
     }
   }
 
@@ -590,6 +761,7 @@ export class Socket extends EventSpewer {
     }
 
     this.send(MediaOpCodes.IDENTIFY, {
+      max_dave_protocol_version: DaveSession.maxProtocolVersion,
       server_id: this.serverId,
       session_id: this.sessionId,
       token: this.token,
@@ -602,6 +774,7 @@ export class Socket extends EventSpewer {
 
   resume(): void {
     this.send(MediaOpCodes.RESUME, {
+      seq_ack: this.sequence,
       server_id: this.serverId,
       session_id: this.sessionId,
       token: this.token,
@@ -632,9 +805,8 @@ export class Socket extends EventSpewer {
       if (this.forceMode && MEDIA_ENCRYPTION_MODES.includes(this.forceMode)) {
         mode = this.forceMode;
       } else {
-        for (let value of data.modes) {
-          let m = value as MediaEncryptionModes;
-          if (MEDIA_ENCRYPTION_MODES.includes(m)) {
+        for (let m of MEDIA_ENCRYPTION_MODES) {
+          if (data.modes.includes(m) && RTPCrypto.isModeAvailable(m)) {
             mode = m;
             break;
           }

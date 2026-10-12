@@ -9,8 +9,6 @@ import {
   MediaProtocols,
   MediaSilencePacket,
   MediaSSRCTypes,
-  RTPHeaderExtensionOneByte,
-  RTPHeaderExtensionTwoByte,
   RTPPayloadTypes,
   SocketEvents,
   MEDIA_CODECS_AUDIO,
@@ -29,7 +27,7 @@ import {
   RTPHeader,
   RTPNonce,
 } from './mediapackets/rtp';
-import RTPCrypto from './mediapackets/rtpcrypto';
+import RTPCrypto, { RTP_NONCE_LENGTH } from './mediapackets/rtpcrypto';
 
 
 export interface FrameOptions {
@@ -72,10 +70,6 @@ export interface UDPFrom {
 
 
 export class Socket extends EventSpewer {
-  caches: {
-    audio: Buffer,
-    video?: Buffer,
-  };
   codecs: {
     audio: null | string,
     video: null | string,
@@ -115,12 +109,10 @@ export class Socket extends EventSpewer {
       writable: false,
     });
 
-    this.caches = {audio: Buffer.alloc(5 * 1024)};
     this.headers = {audio: new RTPHeader({randomize: true})};
     this.nonces = {audio: new RTPNonce({randomize: true})};
 
     if (this.videoEnabled) {
-      this.caches.video = Buffer.alloc(5 * 1024);
       this.headers.video = new RTPHeader({randomize: true});
       this.nonces.video = new RTPNonce({randomize: true});
     }
@@ -237,7 +229,7 @@ export class Socket extends EventSpewer {
   setMode(
     value: string,
   ): Socket {
-    if (!MEDIA_ENCRYPTION_MODES.includes(value as MediaEncryptionModes)) {
+    if (!MEDIA_ENCRYPTION_MODES.includes(value as MediaEncryptionModes) || !RTPCrypto.isModeAvailable(value)) {
       throw new Error(`Encryption mode '${value}' is not supported.`);
     }
     Object.defineProperty(this, 'mode', {value});
@@ -451,35 +443,34 @@ export class Socket extends EventSpewer {
         return;
       }
 
-      rtp.nonce = Buffer.alloc(24);
-      switch (this.mode) {
-        case MediaEncryptionModes.XSALSA20_POLY1305_LITE: {
-          // last 4 bytes
-          packet.copy(rtp.nonce, 0, packet.length - 4);
-          rtp.payload = packet.slice(12, -4);
-        }; break;
-        case MediaEncryptionModes.XSALSA20_POLY1305_SUFFIX: {
-          // last 24 bytes
-          packet.copy(rtp.nonce, 0, packet.length - 24);
-          rtp.payload = packet.slice(12, -24);
-        }; break;
-        case MediaEncryptionModes.XSALSA20_POLY1305: {
-          // first 12 bytes, the rtp header
-          // currently broken for some reason
-          packet.copy(rtp.nonce, 0, 0, 12);
-          rtp.payload = packet.slice(12);
-        }; break;
-        default: {
-          const error = new MediaRTPError(`${this.mode} is not supported for decoding.`, from, packet, rtp);
+      // rtpsize modes: the header (including csrcs and the extension preamble) is unencrypted and used as the additional data
+      let headerLength = 12 + (rtp.header.csrcCount * 4);
+      let extensionLength = 0;
+      if (rtp.header.extension) {
+        if (packet.length < headerLength + 4) {
+          const error = new MediaRTPError('Received an rtp packet with a truncated header extension', from, packet, rtp);
           this.emit(SocketEvents.WARN, error);
           return;
-        };
+        }
+        // RFC3550 Section 5.3.1, length is in 32-bit words and excludes the 4 byte preamble
+        extensionLength = packet.readUInt16BE(headerLength + 2) * 4;
+        headerLength += 4;
+      }
+      if (packet.length < headerLength + RTP_NONCE_LENGTH) {
+        const error = new MediaRTPError('Received an rtp packet that\'s way too small to be valid', from, packet, rtp);
+        this.emit(SocketEvents.WARN, error);
+        return;
       }
 
+      rtp.nonce = packet.subarray(packet.length - RTP_NONCE_LENGTH);
+      rtp.payload = packet.subarray(headerLength, packet.length - RTP_NONCE_LENGTH);
+
       let data: Buffer | null = RTPCrypto.decrypt(
+        this.mode!,
         this.key!,
-        rtp.payload!,
-        rtp.nonce!,
+        packet.subarray(0, headerLength),
+        rtp.payload,
+        rtp.nonce,
       );
       if (!data) {
         const error = new MediaRTPError('Packet failed to decrypt', from, packet, rtp);
@@ -487,78 +478,15 @@ export class Socket extends EventSpewer {
         return;
       }
 
-      if (rtp.header.padding) {
+      if (rtp.header.padding && data.length) {
         // RFC3550 Section 5.1
         // last byte contains amount of padding, including itself, slice that stuff off
-        data = data.slice(0, data.length - data.readUIntBE(data.length - 1, 1));
+        data = data.subarray(0, data.length - data.readUInt8(data.length - 1));
       }
 
-      if (rtp.header.extension) {
-        if (RTPHeaderExtensionOneByte.HEADER.every((header, i) => header === (data!)[i])) {
-          // RFC5285 Section 4.2: One-Byte Header
-
-          const fieldAmount = data.readUIntBE(2, 2);
-          // const fields: Array<Buffer> = [];
-          // Unknown as to what each field is
-
-          let offset = 4;
-          for (let i = 0; i < fieldAmount; i++) {
-            const byte = data.readUIntBE(offset++, 1);
-            const identifer = byte & RTPHeaderExtensionOneByte.LOCAL_IDENTIFER;
-            const len = ((byte >> 4) & RTPHeaderExtensionOneByte.LOCAL_IDENTIFER) + 1;
-
-            // ignore rest if identifier === 15 (local identifer)
-            if (identifer === RTPHeaderExtensionOneByte.LOCAL_IDENTIFER) {
-              break;
-            }
-
-            // skip the field data since we don't know what to do with it
-            offset += len;
-            // fields.push(data.slice(offset, offset += len));
-
-            /*
-            // apparently discord's padding isn't actually padding from the RFC..
-            // is just padding
-            while (data[offset] === 0) {
-              offset++;
-            }
-            */
-          }
-          // https://github.com/discordjs/discord.js/pull/3555
-          offset++;
-          data = data.slice(offset);
-          // do something here with the fields, then clear it
-          // fields.length = 0;
-        } else if (RTPHeaderExtensionTwoByte.HEADER.every((header, i) => header === (data!)[i])) {
-          // RFC5285 Section 4.3: Two-Byte Header not received yet, appbits unknown anyways
-          // using two bytes, 0x10 and 0x00 instead
-          // if appbits is all 0s, ignore, so rn ignore this packet
-
-          const error = new MediaRTPError('Received Two Byte header with appbits being 0, ignoring', from, packet, rtp);
-          this.emit(SocketEvents.LOG, error);
-          return;
-          /*
-          // handle the two byte
-          const fields = [];
-          const fieldAmount = data.readUIntBE(2, 2);
-          let offset = 4;
-          for (let i = 0; i < fieldAmount; i++) {
-            const identifier = data.readUIntBE(offset++, 1);
-            const len = data.readUIntBE(offset++, 1);
-            if (!len) {continue;}
-            fields.push(data.slice(offset, offset + len));
-            offset += len;
-            while (data[offset] === 0) {offset++;}
-          }
-          if (offset !== data.length) {
-            fields.push(data.slice(offset));
-            //just making sure, dunno tho
-          }
-          
-          data = (fields.length <= 1) ? fields.shift() : Buffer.concat(fields);
-          fields.length = 0;
-          */
-        }
+      if (extensionLength) {
+        // the header extension's body is encrypted along with the payload, we don't use it
+        data = data.subarray(extensionLength);
       }
 
       let userId: null | string = null;
@@ -571,6 +499,22 @@ export class Socket extends EventSpewer {
             userId = this.mediaGateway.ssrcToUserId(rtp.header.ssrc, MediaSSRCTypes.VIDEO);
           }; break;
         }
+      }
+
+      const dave = this.mediaGateway.dave;
+      if (dave && format === MediaCodecTypes.AUDIO) {
+        if (userId === null) {
+          const error = new MediaRTPError('Dropping audio packet from an unknown ssrc, cannot e2e decrypt it', from, packet, rtp);
+          this.emit(SocketEvents.LOG, error);
+          return;
+        }
+        const decrypted = dave.decrypt(data, userId);
+        if (!decrypted) {
+          const error = new MediaRTPError('Packet failed to e2e decrypt', from, packet, rtp);
+          this.emit(SocketEvents.LOG, error);
+          return;
+        }
+        data = decrypted;
       }
 
       this.emit(SocketEvents.PACKET, {
@@ -639,7 +583,7 @@ export class Socket extends EventSpewer {
       throw new Error('Invalid frame type');
     }
 
-    let useCache = options.useCache || options.useCache === undefined;
+    const useCache = options.useCache || options.useCache === undefined;
     if (type === MediaCodecTypes.VIDEO && !this.videoEnabled) {
       throw new Error('Cannot send in video frames when video is disabled!');
     }
@@ -647,21 +591,18 @@ export class Socket extends EventSpewer {
     let cache: {
       header: RTPHeader,
       nonce: RTPNonce,
-      payload: Buffer,
     };
     switch (type) {
       case MediaCodecTypes.AUDIO: {
         cache = {
           header: this.headers.audio!,
           nonce: this.nonces.audio!,
-          payload: this.caches.audio!,
         };
       }; break;
       case MediaCodecTypes.VIDEO: {
         cache = {
           header: this.headers.video!,
           nonce: this.nonces.video!,
-          payload: this.caches.video!,
         };
       }; break;
       default: {
@@ -669,13 +610,11 @@ export class Socket extends EventSpewer {
       };
     }
 
-    const rtp: {
-      header?: RTPHeader,
-      nonce?: RTPNonce,
-    } = {};
+    let header: RTPHeader;
+    let rtpNonce: RTPNonce;
     if (useCache) {
-      rtp.header = cache.header;
-      rtp.nonce = cache.nonce;
+      header = cache.header;
+      rtpNonce = cache.nonce;
     } else {
       let payloadType: number, ssrc: number;
       switch (type) {
@@ -691,14 +630,9 @@ export class Socket extends EventSpewer {
           throw new Error(`Invalid type ${type}`);
         };
       }
-      rtp.header = new RTPHeader({payloadType, ssrc});
-      rtp.nonce = new RTPNonce({randomize: true});
-    }
+      header = new RTPHeader({payloadType, ssrc});
+      rtpNonce = new RTPNonce({randomize: true});
 
-    rtp.header = rtp.header as RTPHeader;
-    rtp.nonce = rtp.nonce as RTPNonce;
-
-    if (!useCache && cache.header) {
       if (options.sequence === undefined) {
         options.sequence = cache.header.sequence;
         options.incrementSequence = false;
@@ -709,64 +643,18 @@ export class Socket extends EventSpewer {
       }
     }
 
-    rtp.header.setSequence(options.sequence, options.incrementSequence);
-    rtp.header.setTimestamp(options.timestamp, options.incrementTimestamp);
+    header.setSequence(options.sequence, options.incrementSequence);
+    header.setTimestamp(options.timestamp, options.incrementTimestamp);
+    const nonce = rtpNonce.set(options.nonce, options.incrementNonce);
 
-    const data: Array<Buffer | {
-      length: number,
-      packet: Buffer,
-    }> = [];
-    const payloadDataCache = (useCache) ? cache.payload.slice(12) : null;
-
-    let nonce: Buffer;
-    switch (this.mode) {
-      case MediaEncryptionModes.XSALSA20_POLY1305_LITE: {
-        nonce = rtp.nonce.set(options.nonce, options.incrementNonce);
-        data.push(nonce.slice(0, 4));
-      }; break;
-      case MediaEncryptionModes.XSALSA20_POLY1305_SUFFIX: {
-        nonce = rtp.nonce.generate();
-        data.push(nonce);
-      }; break;
-      case MediaEncryptionModes.XSALSA20_POLY1305: {
-        rtp.header.copy(rtp.nonce.buffer);
-        nonce = rtp.nonce.buffer;
-      }; break;
-      default: {
-        throw new Error(`${this.mode} is not supported for encoding.`);
-      };
+    const dave = this.mediaGateway.dave;
+    if (dave && type === MediaCodecTypes.AUDIO) {
+      packet = dave.encrypt(packet);
     }
 
-    data.unshift(RTPCrypto.encrypt(
-      this.key!,
-      packet,
-      nonce,
-      payloadDataCache,
-    ));
-
-    let buffer: Buffer;
-    if (useCache) {
-      let total = rtp.header.length;
-      rtp.header.copy(cache.payload);
-      data.forEach((buf) => {
-        const start = total;
-        total += buf.length;
-        if (Buffer.isBuffer(buf)) {
-          buf.copy(cache.payload, start);
-        }
-      });
-      buffer = cache.payload.slice(0, total);
-    } else {
-      const buffers = [rtp.header.buffer, ...data].map((buffer) => {
-        if (Buffer.isBuffer(buffer)) {
-          return buffer;
-        }
-        return buffer.packet;
-      });
-      buffer = Buffer.concat(buffers);
-    }
-
-    this.send(buffer);
+    // rtpsize modes: rtp header | encrypted payload + auth tag | 4 byte nonce
+    const encrypted = RTPCrypto.encrypt(this.mode!, this.key!, header.buffer, packet, nonce);
+    this.send(Buffer.concat([header.buffer, encrypted, nonce]));
   }
 
   sendAudioSilenceFrame(): void {

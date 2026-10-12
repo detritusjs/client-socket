@@ -1,12 +1,12 @@
 export const Package = Object.freeze({
   URL: 'https://github.com/detritusjs/client-socket',
-  VERSION: '0.9.0-beta.9',
+  VERSION: '0.9.0-beta.10',
 });
 
 
 export const ApiVersions = Object.freeze({
   GATEWAY: 10,
-  MEDIA_GATEWAY: 5,
+  MEDIA_GATEWAY: 8,
 });
 
 export enum CompressTypes {
@@ -18,9 +18,10 @@ export const COMPRESS_TYPES = Object.freeze(Object.values(CompressTypes));
 
 export enum CryptoModules {
   LIBSODIUM_WRAPPERS = 'libsodium-wrappers',
-  SODIUM = 'sodium',
-  TWEETNACL = 'tweetnacl',
+  SODIUM_NATIVE = 'sodium-native',
 }
+
+export const DAVE_MODULE = '@snazzah/davey';
 
 export const DEFAULT_SHARD_COUNT = 1;
 export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
@@ -345,11 +346,24 @@ export enum MediaEncryptionModes {
   XSALSA20_POLY1305_SUFFIX = 'xsalsa20_poly1305_suffix',
 }
 
+// in order of preference, the rest were discontinued on 2024-11-18
 export const MEDIA_ENCRYPTION_MODES = Object.freeze([
-  MediaEncryptionModes.XSALSA20_POLY1305_LITE,
-  MediaEncryptionModes.XSALSA20_POLY1305_SUFFIX,
-  MediaEncryptionModes.XSALSA20_POLY1305,
+  MediaEncryptionModes.AEAD_AES256_GCM_RTPSIZE,
+  MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE,
 ]);
+
+export const MediaDaveTransition = Object.freeze({
+  // seconds
+  EXPIRY: 10,
+  EXPIRY_PENDING_DOWNGRADE: 24,
+  // consecutive decryption failures before we try to recover
+  FAILURE_TOLERANCE: 36,
+});
+
+export enum MediaDaveProposalsOperationTypes {
+  APPEND = 0,
+  REVOKE = 1,
+}
 
 export enum MediaOpCodes {
   IDENTIFY = 0,
@@ -363,7 +377,7 @@ export enum MediaOpCodes {
   HELLO = 8,
   RESUMED = 9,
   SIGNAL = 10,
-
+  CLIENTS_CONNECT = 11,
   CLIENT_CONNECT = 12,
   CLIENT_DISCONNECT = 13,
   SESSION_UPDATE = 14,
@@ -374,16 +388,17 @@ export enum MediaOpCodes {
   SPEED_TEST = 19,
 
   PLATFORM = 20,
-  SECURE_FRAMES_PREPARE_PROTOCOL_TRANSITION = 21,
-  SECURE_FRAMES_EXECUTE_TRANSITION = 22,
-  SECURE_FRAMES_READY_FOR_TRANSITION = 23,
-  SECURE_FRAMES_PREPARE_EPOCH = 24,
-  MLS_EXTERNAL_SENDER_PACKAGE = 25,
-  MLS_KEY_PACKAGE = 26,
-  MLS_PROPOSALS = 27,
-  MLS_COMMIT_WELCOME = 28,
-  MLS_PREPARE_COMMIT_TRANSITION = 29,
-  MLS_WELCOME = 30,
+  DAVE_PREPARE_TRANSITION = 21,
+  DAVE_EXECUTE_TRANSITION = 22,
+  DAVE_TRANSITION_READY = 23,
+  DAVE_PREPARE_EPOCH = 24,
+  DAVE_MLS_EXTERNAL_SENDER = 25,
+  DAVE_MLS_KEY_PACKAGE = 26,
+  DAVE_MLS_PROPOSALS = 27,
+  DAVE_MLS_COMMIT_WELCOME = 28,
+  DAVE_MLS_ANNOUNCE_COMMIT_TRANSITION = 29,
+  DAVE_MLS_WELCOME = 30,
+  DAVE_MLS_INVALID_COMMIT_WELCOME = 31,
 }
 
 export enum MediaProtocols {
@@ -508,6 +523,11 @@ export enum SocketMediaCloseCodes {
   DISCONNECTED = 4014,
   VOICE_SERVER_CRASHED = 4015,
   UNKNOWN_ENCRYPTION_MODE = 4016,
+  DAVE_PROTOCOL_REQUIRED = 4017,
+
+  BAD_REQUEST = 4020,
+  RATE_LIMITED = 4021,
+  CALL_TERMINATED = 4022,
 
   HEARTBEAT_TIMEOUT = 4800,
   UNRESUMABLE = 4801,

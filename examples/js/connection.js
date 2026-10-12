@@ -1,7 +1,7 @@
 const {
   Constants,
   Gateway,
-} = require('../lib');
+} = require('../../lib');
 
 
 const token = '';
