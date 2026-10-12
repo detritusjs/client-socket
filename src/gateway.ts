@@ -91,6 +91,8 @@ export interface SocketOptions {
 export class Socket extends EventSpewer {
   readonly state: SocketStates = SocketStates.CLOSED;
 
+  _lastSocket: BaseSocket | null = null;
+  _reconnectTimeout = new Timers.Timeout();
   _heartbeat: {
     ack: boolean,
     lastAck: null | number,
@@ -187,7 +189,8 @@ export class Socket extends EventSpewer {
       throw new Error('Install `Erlpack` to use ETF encoding.');
     }
 
-    this.bucket = new Bucket(120, 60 * 1000);
+    // reserve a few of the 120 per minute for heartbeats and identify/resume, which skip the queue
+    this.bucket = new Bucket(120, 60 * 1000, 5);
 
     this.decompressor = null;
     switch (this.compress) {
@@ -230,6 +233,8 @@ export class Socket extends EventSpewer {
 
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
+      _lastSocket: {enumerable: false},
+      _reconnectTimeout: {enumerable: false, writable: false},
       identifyProperties: {enumerable: false},
       killed: {configurable: true},
       state: {configurable: true, writable: false},
@@ -411,8 +416,9 @@ export class Socket extends EventSpewer {
     url?: null | string | URL,
   ): void {
     if (this.killed) {return;}
+    this._reconnectTimeout.stop();
     if (this.connected) {
-      this.disconnect();
+      this.disconnect(SocketInternalCloseCodes.RECONNECTING);
     }
 
     if (!url) {
@@ -439,7 +445,7 @@ export class Socket extends EventSpewer {
     }
 
     try {
-      this.socket = new BaseSocket(this.url.href);
+      this.socket = this._lastSocket = new BaseSocket(this.url.href);
       this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this, this.socket));
       this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
       this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
@@ -451,10 +457,10 @@ export class Socket extends EventSpewer {
           this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
-          setTimeout(() => {
+          this._reconnectTimeout.start(this.reconnectDelay, () => {
             this.connect(url);
             this.reconnects++;
-          }, this.reconnectDelay);
+          });
         }
       }
     }
@@ -620,6 +626,7 @@ export class Socket extends EventSpewer {
   kill(error?: Error): void {
     if (!this.killed) {
       Object.defineProperty(this, 'killed', {value: true});
+      this._reconnectTimeout.stop();
       this.disconnect(SocketCloseCodes.NORMAL);
       for (let [serverId, socket] of this.mediaGateways) {
         socket.kill(error);
@@ -641,7 +648,8 @@ export class Socket extends EventSpewer {
       reason = (SocketInternalCloseReasons as any)[code];
     }
     this.emit(SocketEvents.CLOSE, {code, reason});
-    if (!this.socket || this.socket === target) {
+    // a stale socket closing late must not schedule a second reconnect
+    if (this.socket === target || (!this.socket && this._lastSocket === target)) {
       this.setState(SocketStates.CLOSED);
       this.disconnect(code, reason);
       if (this.autoReconnect && !this.killed) {
@@ -649,10 +657,10 @@ export class Socket extends EventSpewer {
           this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
-          setTimeout(() => {
+          this._reconnectTimeout.start(this.reconnectDelay, () => {
             this.connect();
             this.reconnects++;
-          }, this.reconnectDelay);
+          });
         }
       }
     }
@@ -697,7 +705,7 @@ export class Socket extends EventSpewer {
     op: number,
     d: any,
     callback?: Function,
-    direct: boolean = false,
+    priority: boolean = false,
   ): void {
     const packet = {op, d};
 
@@ -714,12 +722,14 @@ export class Socket extends EventSpewer {
       this.emit(SocketEvents.WARN, error);
     }
     if (data !== undefined) {
-      if (direct) {
-        if (this.connected && this.socket) {
-          this.socket.send(data, callback);
-        } else {
-          this.emit(SocketEvents.WARN, new DroppedPacketError(packet, 'Socket isn\'t connected'));
-        }
+      if (priority) {
+        this.bucket.addPriority(() => {
+          if (this.connected && this.socket) {
+            this.socket.send(data, callback);
+          } else {
+            this.emit(SocketEvents.WARN, new DroppedPacketError(packet, 'Socket isn\'t connected'));
+          }
+        });
       } else {
         const throttled = () => {
           if (this.bucket.locked || !this.connected) {
@@ -854,6 +864,18 @@ export class Socket extends EventSpewer {
     }), callback);
   }
 
+  // the response comes back as a `CHANNEL_INFO` dispatch
+  requestChannelInfo(
+    guildId: string,
+    fields: Array<string> = ['status', 'voice_start_time'],
+    callback?: Function,
+  ): void {
+    this.send(GatewayOpCodes.REQUEST_CHANNEL_INFO, {
+      guild_id: guildId,
+      fields,
+    }, callback);
+  }
+
   requestGuildMembers(
     guildIds: Array<string> | string,
     options: {
@@ -872,6 +894,16 @@ export class Socket extends EventSpewer {
       presences: options.presences,
       query: options.query,
       user_ids: options.userIds,
+    }, callback);
+  }
+
+  // the response comes back as `SOUNDBOARD_SOUNDS` dispatches, one per guild
+  requestSoundboardSounds(
+    guildIds: Array<string> | string,
+    callback?: Function,
+  ): void {
+    this.send(GatewayOpCodes.REQUEST_SOUNDBOARD_SOUNDS, {
+      guild_ids: (Array.isArray(guildIds)) ? guildIds : [guildIds],
     }, callback);
   }
 
@@ -1004,15 +1036,16 @@ export class Socket extends EventSpewer {
       selfVideo?: boolean,
       timeout?: number,
       video?: boolean,
-    } = {
-      receive: true,
-      timeout: DEFAULT_VOICE_TIMEOUT,
-    },
+    } = {},
   ): Promise<MediaSocket | null> {
     if (!guildId && !channelId) {
       throw new Error('A Guild Id or a Channel Id is required.');
     }
 
+    options = Object.assign({}, options);
+    if (options.receive === undefined) {
+      options.receive = true;
+    }
     if (options.timeout === undefined) {
       options.timeout = DEFAULT_VOICE_TIMEOUT;
     }

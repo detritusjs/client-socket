@@ -133,13 +133,23 @@ export class BaseSocket extends EventSpewer {
       }
 
       const now = Date.now();
-      new Promise((res, rej) => {
-        this.pings.set(nonce, {resolve: res, reject: rej});
-        this.socket.ping(JSON.stringify({nonce}));
-      }).then(() => {
-        expire.stop();
-        resolve(Math.round(Date.now() - now));
+      this.pings.set(nonce, {
+        resolve: () => {
+          expire.stop();
+          resolve(Math.round(Date.now() - now));
+        },
+        reject: (error: Error) => {
+          expire.stop();
+          reject(error);
+        },
       });
+      try {
+        this.socket.ping(JSON.stringify({nonce}));
+      } catch(error) {
+        this.pings.delete(nonce);
+        expire.stop();
+        reject(error);
+      }
     });
   }
 

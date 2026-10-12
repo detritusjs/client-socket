@@ -2,12 +2,15 @@ import { Timers } from 'detritus-utils';
 
 
 export class Bucket {
+  readonly resetTimeout = new Timers.Timeout();
   readonly timeout = new Timers.Timeout();
 
   delay: number;
   limit: number;
   locked: boolean;
-  queue: Array<any>;
+  priority: Array<Function>;
+  queue: Array<Function>;
+  reserved: number;
   sent: {
     amount: number,
     reset: number,
@@ -16,17 +19,21 @@ export class Bucket {
   constructor(
     limit: number = 0,
     delay: number = 0,
+    reserved: number = 0,
   ) {
     this.delay = delay;
     this.limit = limit;
     this.locked = false;
+    this.priority = [];
     this.queue = [];
+    this.reserved = reserved;
     this.sent = {
       amount: 0,
       reset: 0,
     };
 
     Object.defineProperties(this, {
+      resetTimeout: {enumerable: false},
       timeout: {enumerable: false},
     });
   }
@@ -43,7 +50,14 @@ export class Bucket {
     this.shift();
   }
 
+  // priority items go before the queue, ignore `locked`, and may use the `reserved` slots
+  addPriority(throttled: Function): void {
+    this.priority.push(throttled);
+    this.shift();
+  }
+
   clear(): void {
+    this.priority.length = 0;
     this.queue.length = 0;
   }
 
@@ -59,27 +73,30 @@ export class Bucket {
   }
 
   shift(): void {
-    if (this.locked) {return;}
-    if (!this.queue.length) {return;}
-
-    if (this.limit) {
-      const now = Date.now();
-      if (this.sent.reset + this.delay <= now) {
-        this.sent.reset = now;
-        this.sent.amount = 0;
-      }
-      if (this.limit <= ++this.sent.amount) {
-        const diff = Math.max(this.delay - (now - this.sent.reset), 0);
-        if (diff) {
-          this.lock(diff);
+    while (this.priority.length || (!this.locked && this.queue.length)) {
+      const isPriority = !!this.priority.length;
+      if (this.limit) {
+        const now = Date.now();
+        if (this.sent.reset + this.delay <= now) {
+          this.sent.reset = now;
+          this.sent.amount = 0;
         }
-      }
-    }
 
-    const throttled = this.queue.shift();
-    if (throttled) {
-      throttled();
-      this.shift();
+        const limit = (isPriority) ? this.limit : Math.max(this.limit - this.reserved, 0);
+        if (limit <= this.sent.amount) {
+          // wait for the window to reset, keeping an already scheduled wakeup
+          this.resetTimeout.start(this.sent.reset + this.delay - now, () => {
+            this.shift();
+          }, false);
+          return;
+        }
+        this.sent.amount++;
+      }
+
+      const throttled = (isPriority) ? this.priority.shift() : this.queue.shift();
+      if (throttled) {
+        throttled();
+      }
     }
   }
 
