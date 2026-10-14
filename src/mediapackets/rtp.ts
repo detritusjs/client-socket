@@ -131,7 +131,7 @@ export class RTPHeader {
 
   setVersion(version: number): void {
     this.buffer.writeUIntBE(
-      (version << 6 | this.padding << 5 | this.extension << 4 | this.csrcCount),
+      ((version & 0x03) << 6 | this.padding << 5 | this.extension << 4 | this.csrcCount),
       0,
       1,
     );
@@ -155,7 +155,7 @@ export class RTPHeader {
 
   setCSRCCount(csrcCount: number): void {
     this.buffer.writeUIntBE(
-      (this.version << 6 | this.padding << 5 | this.extension << 4 | csrcCount),
+      (this.version << 6 | this.padding << 5 | this.extension << 4 | (csrcCount & 0x0F)),
       0,
       1,
     );
@@ -166,7 +166,7 @@ export class RTPHeader {
   }
 
   setPayloadType(payloadType: number): void {
-    this.buffer.writeUIntBE((this.marker << 7 | payloadType), 1, 1);
+    this.buffer.writeUIntBE((this.marker << 7 | (payloadType & 0x7F)), 1, 1);
   }
 
   setSequence(
@@ -178,9 +178,9 @@ export class RTPHeader {
       increment = true;
     }
     if (increment) {
-      sequence = this.sequence + 1;
+      sequence += this.sequence;
     }
-    sequence %= MaxNumbers.UINT16;
+    sequence %= (MaxNumbers.UINT16 + 1);
     this.buffer.writeUIntBE(sequence, 2, 2);
   }
 
@@ -189,13 +189,13 @@ export class RTPHeader {
     increment: boolean = false,
   ): void {
     if (timestamp === undefined) {
-      timestamp = Date.now();
+      timestamp = Math.round(Math.random() * MaxNumbers.UINT32);
       increment = false;
     }
     if (increment) {
       timestamp += this.timestamp;
     }
-    timestamp %= MaxNumbers.UINT32;
+    timestamp %= (MaxNumbers.UINT32 + 1);
     this.buffer.writeUIntBE(timestamp, 4, 4);
   }
 
@@ -247,7 +247,7 @@ export class RTPHeader {
       if (increment) {
         nonce += this.nonceNumber;
       }
-      nonce %= MaxNumbers.UINT32;
+      nonce %= (MaxNumbers.UINT32 + 1);
       this.nonce.writeUIntBE(nonce, 0, 4);
     }
   }
@@ -322,7 +322,7 @@ export class RTPNonce {
     if (increment) {
       nonce = this.number + nonce;
     }
-    nonce %= MaxNumbers.UINT32;
+    nonce %= (MaxNumbers.UINT32 + 1);
     this.buffer.writeUIntBE(nonce, 0, 4);
     return this.buffer;
   }

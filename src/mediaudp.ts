@@ -1,6 +1,6 @@
 import * as dgram from 'dgram';
 
-import { EventSpewer } from 'detritus-utils';
+import { EventSpewer, Timers } from 'detritus-utils';
 
 import {
   MediaCodecs,
@@ -11,6 +11,7 @@ import {
   MediaSSRCTypes,
   RTPPayloadTypes,
   SocketEvents,
+  SocketInternalCloseCodes,
   MEDIA_CODECS_AUDIO,
   MEDIA_CODECS_VIDEO,
   MEDIA_ENCRYPTION_MODES,
@@ -29,6 +30,9 @@ import {
 } from './mediapackets/rtp';
 import RTPCrypto, { RTP_NONCE_LENGTH } from './mediapackets/rtpcrypto';
 
+
+const IP_DISCOVERY_ATTEMPTS = 5;
+const IP_DISCOVERY_INTERVAL = 1000;
 
 export interface FrameOptions {
   incrementNonce?: boolean,
@@ -264,17 +268,41 @@ export class Socket extends EventSpewer {
       this.disconnect();
     }
 
-    const onPacket = this.onPacket.bind(this);
     const socket = this.socket = dgram.createSocket('udp4');
+    const ipDiscoveryInterval = new Timers.Interval();
+    // dgram emits events asynchronously, ignore anything from a socket we've already replaced/disconnected
+    const onPacket = (packet: Buffer, from: UDPFrom) => {
+      if (this.socket === socket) {
+        this.onPacket(packet, from);
+      }
+    };
     this.emit(SocketEvents.SOCKET, socket);
-    socket.once('message', (packet: Buffer) => {
+    const onIpDiscovery = (packet: Buffer) => {
+      if (this.socket !== socket) {
+        return;
+      }
+      // response: uint16 type (0x2) | uint16 length (70) | uint32 ssrc | 64 byte null-terminated address | uint16 port
+      if (packet.length !== 74 || packet.readUInt16BE(0) !== 2) {
+        // rtp/rtcp packets can arrive before discovery finishes, only warn about packets that look like discovery responses
+        if (packet.length === 74) {
+          this.emit(SocketEvents.WARN, new Error('Received an invalid ip discovery packet'));
+        }
+        return;
+      }
       if (this.ssrc !== packet.readUInt32BE(4)) {
         this.emit(SocketEvents.WARN, new Error('SSRC mismatch in ip discovery packet'));
         return;
       }
+      socket.removeListener('message', onIpDiscovery);
+      ipDiscoveryInterval.stop();
+      this.mediaGateway.ipDiscoveryFailures = 0;
 
-      this.local.ip = packet.slice(8, packet.indexOf(0, 8)).toString();
-      this.local.port = packet.readUIntBE(packet.length - 2, 2);
+      let addressEnd = packet.indexOf(0, 8);
+      if (addressEnd === -1 || 72 < addressEnd) {
+        addressEnd = 72;
+      }
+      this.local.ip = packet.toString('utf8', 8, addressEnd);
+      this.local.port = packet.readUInt16BE(72);
 
       const codecs: Array<{
         name: string,
@@ -336,12 +364,22 @@ export class Socket extends EventSpewer {
 
       socket.on('message', onPacket);
       this.emit(SocketEvents.READY);
-    });
+    };
+    socket.on('message', onIpDiscovery);
 
     socket.on('close', () => {
-      this.connected = false;
+      ipDiscoveryInterval.stop();
+      socket.removeListener('message', onIpDiscovery);
       socket.removeListener('message', onPacket);
-      this.emit(SocketEvents.CLOSE);
+      // `close` fires asynchronously, after `disconnect()` and possibly after a new socket was created by `connect()`
+      if (this.socket === socket) {
+        this.connected = false;
+        this.socket = null;
+        this.emit(SocketEvents.CLOSE);
+      } else if (!this.socket) {
+        // closed via `disconnect()`, no new socket replaced it
+        this.emit(SocketEvents.CLOSE);
+      }
     });
 
     socket.on('error', (error: any) => {
@@ -354,6 +392,37 @@ export class Socket extends EventSpewer {
     ipDiscovery.writeUIntBE(1, 0, 2);
     ipDiscovery.writeUIntBE(70, 2, 2);
     ipDiscovery.writeUIntBE(this.ssrc, 4, 4);
+
+    // udp is lossy, resend the discovery packet until we get a response
+    let attempts = 1;
+    ipDiscoveryInterval.start(IP_DISCOVERY_INTERVAL, () => {
+      if (this.socket !== socket) {
+        ipDiscoveryInterval.stop();
+        return;
+      }
+      if (IP_DISCOVERY_ATTEMPTS <= attempts) {
+        ipDiscoveryInterval.stop();
+        const error = new Error(`IP discovery failed after ${attempts} attempts`);
+        this.emit(SocketEvents.WARN, error);
+        this.disconnect();
+
+        const mediaGateway = this.mediaGateway;
+        if (mediaGateway.gateway.reconnectMax <= ++mediaGateway.ipDiscoveryFailures) {
+          mediaGateway.kill(error);
+        } else {
+          // re-identify to get a new udp endpoint instead of leaving the voice channel
+          mediaGateway.identified = false;
+          mediaGateway.disconnect(SocketInternalCloseCodes.RECONNECTING);
+        }
+        return;
+      }
+      attempts++;
+      try {
+        this.send(ipDiscovery);
+      } catch(error) {
+        this.emit(SocketEvents.WARN, error);
+      }
+    });
     this.send(ipDiscovery);
     return this;
   }

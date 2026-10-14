@@ -188,6 +188,10 @@ export class AudioMixer extends EventSpewer {
       position = source.anchorPosition + this.timestampToSamples(this.timestampDiff(rtpTimestamp, source.anchorTimestamp));
     } else {
       position = source.nextPosition;
+      if (rtpTimestamp !== undefined) {
+        source.anchorPosition = position;
+        source.anchorTimestamp = rtpTimestamp;
+      }
     }
 
     if (position + samples <= this.position) {
@@ -220,8 +224,11 @@ export class AudioMixer extends EventSpewer {
     source.nextPosition = Math.max(source.nextPosition, position + samples);
 
     const channels = this.format.channels;
-    // skip whatever part of the frame was already emitted
-    for (let i = Math.max(this.position - position, 0); i < samples; i++) {
+    // skip whatever part of the frame was already emitted, and drop its newest samples if it doesn't fit in the buffer
+    // (writing past the end of the buffer would wrap around onto the slots that are about to be emitted)
+    const start = Math.max(this.position - position, 0);
+    const end = Math.min(samples, this.position + this.bufferSamples - position);
+    for (let i = start; i < end; i++) {
       const index = ((position + i) % this.bufferSamples) * channels;
       const offset = i * sampleSize;
       for (let channel = 0; channel < channels; channel++) {

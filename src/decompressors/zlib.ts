@@ -32,7 +32,7 @@ for (let type of [DependencyTypes.ZLIB]) {
 }
 
 switch (Inflate.type) {
-  case DependencyTypes.PAKO: Inflate.module!.constants.Z_SYNC_FLUSH; break;
+  case DependencyTypes.PAKO: Inflate.flushCode = Inflate.module!.constants.Z_SYNC_FLUSH; break;
   case DependencyTypes.ZLIB: Inflate.flushCode = Inflate.module!.constants.Z_SYNC_FLUSH; break;
 }
 
@@ -145,7 +145,13 @@ export class ZlibDecompressor extends EventSpewer {
         this.inflate.write(chunk);
         if (isEnd) {
           this.flushing = true;
-          this.inflate.flush(Inflate.flushCode, this.onFlush.bind(this));
+          const inflate = this.inflate;
+          this.inflate.flush(Inflate.flushCode, (error: any) => {
+            // ignore a flush from an inflate that was replaced by reset() while it was flushing
+            if (inflate === this.inflate) {
+              this.onFlush(error);
+            }
+          });
           return;
         }
       }; break;

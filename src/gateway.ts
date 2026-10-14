@@ -379,6 +379,8 @@ export class Socket extends EventSpewer {
 
     // un-resumable events
     // 1000
+    // 4007 Invalid Sequence
+    // 4009 Session Timed Out
     // un-resumable and kill socket
     // 4004 Authentication Failed
     // 4010 Invalid Shard Sent
@@ -389,6 +391,8 @@ export class Socket extends EventSpewer {
       code = parseInt(code as string);
       switch (code) {
         case SocketCloseCodes.NORMAL:
+        case SocketGatewayCloseCodes.INVALID_SEQUENCE:
+        case SocketGatewayCloseCodes.SESSION_TIMEOUT:
         case SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE: {
           this.sequence = 0;
           this.sessionId = null;
@@ -421,9 +425,12 @@ export class Socket extends EventSpewer {
       this.disconnect(SocketInternalCloseCodes.RECONNECTING);
     }
 
+    // only resumes go to `resume_gateway_url`, keep `this.url` as the gateway url to identify on
+    let isResumeUrl = false;
     if (!url) {
       if (this.resumeGatewayUrl) {
         url = this.resumeGatewayUrl;
+        isResumeUrl = true;
       } else {
         url = this.url;
       }
@@ -433,33 +440,37 @@ export class Socket extends EventSpewer {
       throw new Error('Socket requires a url to connect to.');
     }
 
-    this.url = new URL('', url as string | URL);
-    this.url.searchParams.set('encoding', this.encoding);
-    this.url.searchParams.set('v', String(ApiVersions.GATEWAY));
-    this.url.pathname = this.url.pathname || '/';
+    const gatewayUrl = new URL('', url as string | URL);
+    gatewayUrl.searchParams.set('encoding', this.encoding);
+    gatewayUrl.searchParams.set('v', String(ApiVersions.GATEWAY));
+    gatewayUrl.pathname = gatewayUrl.pathname || '/';
 
     switch (this.compress) {
       case CompressTypes.ZLIB: {
-        this.url.searchParams.set('compress', this.compress);
+        gatewayUrl.searchParams.set('compress', this.compress);
       }; break;
+    }
+    if (!isResumeUrl) {
+      this.url = gatewayUrl;
     }
 
     try {
-      this.socket = this._lastSocket = new BaseSocket(this.url.href);
+      this.socket = this._lastSocket = new BaseSocket(gatewayUrl.href);
       this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this, this.socket));
       this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
       this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
       this.socket.on(SocketEventsBase.OPEN, this.onOpen.bind(this, this.socket));
     } catch(error) {
       this.socket = null;
+      this.emit(SocketEvents.WARN, error);
       if (this.autoReconnect && !this.killed) {
-        if (this.reconnectMax < this.reconnects) {
-          this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
+        if (this.reconnectMax <= this.reconnects) {
+          this.kill(new Error(`Tried reconnecting ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
           this._reconnectTimeout.start(this.reconnectDelay, () => {
-            this.connect(url);
             this.reconnects++;
+            this.connect((isResumeUrl) ? null : url);
           });
         }
       }
@@ -499,6 +510,12 @@ export class Socket extends EventSpewer {
     reason?: string,
   ): void {
     this.cleanup(code, reason);
+    // internal disconnects use `SocketInternalCloseCodes` and still reconnect through `onClose`
+    if (!(code in SocketInternalCloseReasons)) {
+      this._lastSocket = null;
+      this._reconnectTimeout.stop();
+      this.setState(SocketStates.CLOSED);
+    }
     if (this.socket) {
       if (!reason && (code in SocketInternalCloseReasons)) {
         reason = (SocketInternalCloseReasons as any)[code];
@@ -534,17 +551,35 @@ export class Socket extends EventSpewer {
         if (this.sessionId) {
           this.resume();
         } else {
-          this.identifyTry();
+          const socket = this.socket;
+          this.identifyTry().catch((error) => {
+            this.emit(SocketEvents.WARN, error);
+            if (this.socket === socket) {
+              this.disconnect(SocketInternalCloseCodes.RECONNECTING);
+            }
+          });
         }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
         const shouldResume: GatewayPackets.InvalidSession = packet.d;
-        if (shouldResume) {
-          this.resume();
-        } else {
-          this.disconnect(SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE);
-          this.connect();
+        if (!shouldResume) {
+          this.sequence = 0;
+          this.sessionId = null;
+          this.resumeGatewayUrl = null;
         }
+        // discord recommends waiting a random 1-5 seconds before resuming/identifying again
+        const socket = this.socket;
+        this._reconnectTimeout.start(1000 + Math.round(Math.random() * 4000), () => {
+          if (this.socket !== socket) {
+            return;
+          }
+          if (shouldResume) {
+            this.resume();
+          } else {
+            this.disconnect(SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE);
+            this.connect();
+          }
+        });
       }; break;
       case GatewayOpCodes.RECONNECT: {
         this.disconnect(SocketInternalCloseCodes.RECONNECTING);
@@ -628,6 +663,11 @@ export class Socket extends EventSpewer {
       Object.defineProperty(this, 'killed', {value: true});
       this._reconnectTimeout.stop();
       this.disconnect(SocketCloseCodes.NORMAL);
+      if (this.decompressor) {
+        // frees the zlib stream, `cleanup` would otherwise re-create it when the socket closes
+        this.decompressor.close();
+        this.decompressor = null;
+      }
       for (let [serverId, socket] of this.mediaGateways) {
         socket.kill(error);
       }
@@ -647,19 +687,20 @@ export class Socket extends EventSpewer {
     if (!reason && (code in SocketInternalCloseReasons)) {
       reason = (SocketInternalCloseReasons as any)[code];
     }
-    this.emit(SocketEvents.CLOSE, {code, reason});
     // a stale socket closing late must not schedule a second reconnect
-    if (this.socket === target || (!this.socket && this._lastSocket === target)) {
+    const isCurrent = (this.socket === target || (!this.socket && this._lastSocket === target));
+    this.emit(SocketEvents.CLOSE, {code, reason, stale: !isCurrent});
+    if (isCurrent) {
       this.setState(SocketStates.CLOSED);
       this.disconnect(code, reason);
       if (this.autoReconnect && !this.killed) {
-        if (this.reconnectMax < this.reconnects) {
-          this.kill(new Error(`Tried reconnecting more than ${this.reconnectMax} times.`));
+        if (this.reconnectMax <= this.reconnects) {
+          this.kill(new Error(`Tried reconnecting ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
           this._reconnectTimeout.start(this.reconnectDelay, () => {
-            this.connect();
             this.reconnects++;
+            this.connect();
           });
         }
       }
@@ -764,9 +805,10 @@ export class Socket extends EventSpewer {
 
   setHeartbeat(data: GatewayPackets.Hello): void {
     if (data) {
-      this.heartbeat();
       this._heartbeat.ack = true;
       this._heartbeat.lastAck = Date.now();
+      // sets `ack` to false, so a zombied connection is caught on the first interval
+      this.heartbeat();
       this._heartbeat.intervalTime = data['heartbeat_interval'];
       this._heartbeat.interval.start(this._heartbeat.intervalTime, () => {
         this.heartbeat(true);
@@ -787,8 +829,12 @@ export class Socket extends EventSpewer {
   }
 
   async identifyTry(): Promise<void> {
+    const socket = this.socket;
     if (!this.onIdentifyCheck || (await Promise.resolve(this.onIdentifyCheck()))) {
-      this.identify();
+      // the check may be async, don't identify on a socket that replaced the one we checked for
+      if (this.socket === socket) {
+        this.identify();
+      }
     }
   }
 
@@ -882,19 +928,24 @@ export class Socket extends EventSpewer {
       limit: number,
       nonce?: string,
       presences?: boolean,
-      query: string,
+      query?: string,
       userIds?: Array<string>,
     },
     callback?: Function,
   ): void {
-    this.send(GatewayOpCodes.REQUEST_GUILD_MEMBERS, {
+    const data: any = {
       guild_id: guildIds,
       limit: options.limit,
       nonce: options.nonce,
       presences: options.presences,
-      query: options.query,
-      user_ids: options.userIds,
-    }, callback);
+    };
+    // discord requires exactly one of `query` or `user_ids`
+    if (options.userIds) {
+      data.user_ids = options.userIds;
+    } else {
+      data.query = options.query || '';
+    }
+    this.send(GatewayOpCodes.REQUEST_GUILD_MEMBERS, data, callback);
   }
 
   // the response comes back as `SOUNDBOARD_SOUNDS` dispatches, one per guild

@@ -11,6 +11,7 @@ import {
   MediaSSRCTypes,
   SocketCloseCodes,
   SocketEvents,
+  SocketEventsBase,
   SocketInternalCloseCodes,
   SocketInternalCloseReasons,
   SocketMediaCloseCodes,
@@ -68,6 +69,7 @@ export class Socket extends EventSpewer {
   forceMode: MediaEncryptionModes | null = null;
   gateway: GatewaySocket;
   identified: boolean = false;
+  ipDiscoveryFailures: number = 0;
   killed: boolean = false;
   promises = new Set<{reject: Function, resolve: Function}>();
   protocol: MediaProtocols | null = null;
@@ -186,11 +188,27 @@ export class Socket extends EventSpewer {
     }
   }
 
-  setEndpoint(value: string): void {
+  setEndpoint(value: null | string): void {
     this.endpoint = (value) ? `wss://${value.split(':').shift()}` : null;
     this.identified = false;
-    if (this.connected) {
-      this.connect();
+    if (!this.endpoint) {
+      // discord is reallocating the voice server, wait for the next VOICE_SERVER_UPDATE with an endpoint
+      this.disconnect();
+    } else if (this.connected) {
+      // a `setToken()` call usually follows, only connect if it didn't so we don't open two sockets
+      this.disconnect();
+      process.nextTick(() => {
+        if (this.killed || !this.endpoint || this.socket) {
+          return;
+        }
+        try {
+          this.connect();
+        } catch(error) {
+          this.emit(SocketEvents.WARN, error);
+        }
+      });
+    } else {
+      this.cleanup();
     }
   }
 
@@ -216,9 +234,13 @@ export class Socket extends EventSpewer {
 
   setToken(value: string): void {
     Object.defineProperty(this, 'token', {value});
-    if (!this.identified) {
+    if (!this.identified && this.endpoint) {
       this.resolvePromises();
-      this.connect();
+      try {
+        this.connect();
+      } catch(error) {
+        this.emit(SocketEvents.WARN, error);
+      }
     }
   }
 
@@ -257,19 +279,24 @@ export class Socket extends EventSpewer {
     this.bucket.clear();
     this.bucket.lock();
 
-    this.ssrcs[MediaSSRCTypes.AUDIO].clear();
-    this.ssrcs[MediaSSRCTypes.VIDEO].clear();
-
     // unresumable events
     // 1000 Normal Disconnected
     // 4006 Session No Longer Valid
+    // 4009 Session Timeout
     // 4014 Voice Channel Kick/Deleted
+    // 4016 Unknown Encryption Mode
+    // 4017 DAVE Protocol Required
+    // 4020 Bad Request
     // 4021 Rate Limited
     // 4022 Call Terminated
     switch (code) {
       case SocketCloseCodes.NORMAL:
       case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID:
+      case SocketMediaCloseCodes.SESSION_TIMEOUT:
       case SocketMediaCloseCodes.DISCONNECTED:
+      case SocketMediaCloseCodes.UNKNOWN_ENCRYPTION_MODE:
+      case SocketMediaCloseCodes.DAVE_PROTOCOL_REQUIRED:
+      case SocketMediaCloseCodes.BAD_REQUEST:
       case SocketMediaCloseCodes.RATE_LIMITED:
       case SocketMediaCloseCodes.CALL_TERMINATED: {
         this.identified = false;
@@ -278,6 +305,8 @@ export class Socket extends EventSpewer {
     if (!this.identified) {
       this.sequence = -1;
       this.connectedUserIds.clear();
+      this.ssrcs[MediaSSRCTypes.AUDIO].clear();
+      this.ssrcs[MediaSSRCTypes.VIDEO].clear();
       this.destroyDave();
     }
 
@@ -311,7 +340,8 @@ export class Socket extends EventSpewer {
     this.setState(SocketStates.CONNECTING);
     this.emit(SocketEvents.SOCKET, ws);
     ws.socket.onclose = this.onClose.bind(this, ws);
-    ws.socket.onerror = this.onError.bind(this, ws);
+    // BaseSocket re-emits the websocket's errors, it throws if there is no listener
+    ws.on(SocketEventsBase.ERROR, this.onError.bind(this, ws));
     ws.socket.onmessage = this.onMessage.bind(this, ws);
     ws.socket.onopen = this.onOpen.bind(this, ws);
   }
@@ -424,6 +454,10 @@ export class Socket extends EventSpewer {
         this._heartbeat.lastAck = Date.now();
       }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
+        if (!this.transport) {
+          this.emit(SocketEvents.WARN, new Error('Received a Select Protocol Ack without a transport'));
+          return;
+        }
         if (this.protocol === MediaProtocols.UDP) {
           const {
             audio_codec: audioCodec,
@@ -434,15 +468,22 @@ export class Socket extends EventSpewer {
             video_codec: videoCodec,
           }: MediaGatewayPackets.SelectProtocolAckUDP = packet.d;
 
-          this.setupDave(daveProtocolVersion || 0);
+          try {
+            this.setupDave(daveProtocolVersion || 0);
 
-          (<MediaUDPSocket> this.transport)
-            .setAudioCodec(audioCodec)
-            .setVideoCodec(videoCodec)
-            .setKey(secretKey)
-            .setMode(mode)
-            .setTransportId(mediaSessionId);
-          this.emit(SocketEvents.TRANSPORT_READY, this.transport);
+            this.transport
+              .setAudioCodec(audioCodec)
+              .setVideoCodec(videoCodec)
+              .setKey(secretKey)
+              .setMode(mode)
+              .setTransportId(mediaSessionId);
+          } catch(error) {
+            this.emit(SocketEvents.WARN, error);
+            return;
+          }
+          if (!this.killed) {
+            this.emit(SocketEvents.TRANSPORT_READY, this.transport);
+          }
         } else if (this.protocol === MediaProtocols.WEBRTC) {
           const data: MediaGatewayPackets.SelectProtocolAckWebRTC = packet.d;
         }
@@ -455,7 +496,11 @@ export class Socket extends EventSpewer {
           video_quality_changes: videoQualityChanges,
         }: MediaGatewayPackets.SessionUpdate = packet.d;
 
-        (<MediaUDPSocket> this.transport)
+        if (!this.transport) {
+          this.emit(SocketEvents.WARN, new Error('Received a Session Update without a transport'));
+          return;
+        }
+        this.transport
           .setAudioCodec(audioCodec)
           .setVideoCodec(videoCodec)
           .setTransportId(mediaSessionId);
@@ -546,7 +591,8 @@ export class Socket extends EventSpewer {
   }
 
   setupDave(protocolVersion: number): void {
-    if (!protocolVersion && !this.dave) {
+    // still create the session on protocol version 0 so the call can be upgraded to e2ee later
+    if (!DaveSession.available) {
       return;
     }
     if (this.dave) {
@@ -611,6 +657,11 @@ export class Socket extends EventSpewer {
           this.kill(error);
           return;
         };
+        case SocketMediaCloseCodes.UNKNOWN_ENCRYPTION_MODE: {
+          // reconnecting would select the same mode again
+          this.kill(new Error('Voice server rejected the selected encryption mode'));
+          return;
+        };
         case SocketMediaCloseCodes.DISCONNECTED:
         case SocketMediaCloseCodes.RATE_LIMITED:
         case SocketMediaCloseCodes.CALL_TERMINATED: {
@@ -619,12 +670,20 @@ export class Socket extends EventSpewer {
         };
       }
       if (this.gateway.autoReconnect && !this.killed) {
-        if (this.gateway.reconnectMax < this.reconnects) {
+        if (this.gateway.reconnectMax <= this.reconnects) {
           this.kill();
         } else {
           this.emit(SocketEvents.RECONNECTING);
           setTimeout(() => {
-            this.connect();
+            // no endpoint (waiting on a VOICE_SERVER_UPDATE) or a new socket was already created
+            if (this.killed || !this.endpoint || (this.socket && this.socket !== target)) {
+              return;
+            }
+            try {
+              this.connect();
+            } catch(error) {
+              this.emit(SocketEvents.WARN, error);
+            }
             this.reconnects++;
           }, this.gateway.reconnectDelay);
         }
@@ -636,7 +695,8 @@ export class Socket extends EventSpewer {
     target: BaseSocket,
     event: {error: any} | any,
   ) {
-    this.emit(SocketEvents.WARN, event.error);
+    const error = (event && event.error !== undefined) ? event.error : event;
+    this.emit(SocketEvents.WARN, error);
   }
 
   onMessage(
@@ -645,7 +705,11 @@ export class Socket extends EventSpewer {
   ) {
     if (this.socket === target) {
       const { data } = event;
-      this.handle(data);
+      try {
+        this.handle(data);
+      } catch(error) {
+        this.emit(SocketEvents.WARN, error);
+      }
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE);
     }
@@ -746,9 +810,10 @@ export class Socket extends EventSpewer {
     if (!data || !data.heartbeat_interval) {
       return;
     }
-    this.heartbeat();
     this._heartbeat.ack = true;
     this._heartbeat.lastAck = Date.now();
+    // sets `ack` to false, so a zombied connection is caught on the first interval
+    this.heartbeat();
     this._heartbeat.intervalTime = data.heartbeat_interval;
     this._heartbeat.interval.start(this._heartbeat.intervalTime, () => {
       this.heartbeat(true);
@@ -802,9 +867,14 @@ export class Socket extends EventSpewer {
 
     if (this.protocol === MediaProtocols.UDP) {
       let mode: null | MediaEncryptionModes = null;
-      if (this.forceMode && MEDIA_ENCRYPTION_MODES.includes(this.forceMode)) {
-        mode = this.forceMode;
-      } else {
+      if (this.forceMode) {
+        if (data.modes.includes(this.forceMode)) {
+          mode = this.forceMode;
+        } else {
+          this.emit(SocketEvents.WARN, new Error(`Forced voice mode ${this.forceMode} is not offered by the server, falling back`));
+        }
+      }
+      if (!mode) {
         for (let m of MEDIA_ENCRYPTION_MODES) {
           if (data.modes.includes(m) && RTPCrypto.isModeAvailable(m)) {
             mode = m;
@@ -866,6 +936,7 @@ export class Socket extends EventSpewer {
   sendSpeaking(
     options: {
       delay?: number,
+      priority?: boolean,
       ssrc?: number,
       soundshare?: boolean,
       voice?: boolean,
@@ -874,7 +945,7 @@ export class Socket extends EventSpewer {
   ): void {
     options = Object.assign({
       delay: 0,
-      ssrc: (<MediaUDPSocket> this.transport).ssrc,
+      ssrc: this.audioSSRC,
     }, options);
 
     const data = {
@@ -887,6 +958,9 @@ export class Socket extends EventSpewer {
     }
     if (options.voice) {
       data.speaking |= MediaSpeakingFlags.VOICE;
+    }
+    if (options.priority) {
+      data.speaking |= MediaSpeakingFlags.PRIORITY;
     }
     this.send(MediaOpCodes.SPEAKING, data, callback);
   }

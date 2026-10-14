@@ -86,10 +86,17 @@ export class BaseSocket extends EventSpewer {
   close(code: number = SocketCloseCodes.NORMAL, reason: string = ''): void {
     if (this.connected) {
       this.socket.close(code, reason);
+    } else if (this.connecting) {
+      // aborts the handshake, the close event still fires once
+      this.socket.terminate();
     }
   }
 
-  onClose(code: number, message: string): void {
+  onClose(code: number, message: Buffer | string): void {
+    if (message !== undefined && typeof(message) !== 'string') {
+      message = String(message);
+    }
+
     for (const [nonce, {reject}] of this.pings) {
       reject(new Error('Socket has closed.'));
       this.pings.delete(nonce);
