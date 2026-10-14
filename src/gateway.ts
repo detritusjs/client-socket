@@ -194,7 +194,8 @@ export class Socket extends EventSpewer {
 
     this.decompressor = null;
     switch (this.compress) {
-      case CompressTypes.ZLIB: {
+      case CompressTypes.ZLIB:
+      case CompressTypes.ZSTD: {
         if (!Decompressor.supported().includes(this.compress)) {
           throw new Error(`Missing modules for ${this.compress} Compress Type`);
         }
@@ -446,7 +447,8 @@ export class Socket extends EventSpewer {
     gatewayUrl.pathname = gatewayUrl.pathname || '/';
 
     switch (this.compress) {
-      case CompressTypes.ZLIB: {
+      case CompressTypes.ZLIB:
+      case CompressTypes.ZSTD: {
         gatewayUrl.searchParams.set('compress', this.compress);
       }; break;
     }

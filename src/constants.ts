@@ -12,6 +12,7 @@ export const ApiVersions = Object.freeze({
 export enum CompressTypes {
   NONE = 'none',
   ZLIB = 'zlib-stream',
+  ZSTD = 'zstd-stream',
 }
 
 export const COMPRESS_TYPES = Object.freeze(Object.values(CompressTypes));

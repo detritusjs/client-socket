@@ -1,7 +1,7 @@
 import { EventSpewer } from 'detritus-utils';
 
 import { CompressTypes, ZLIB_SUFFIX } from './constants';
-import { ZlibDecompressor } from './decompressors';
+import { ZSTD_SUPPORTED, ZlibDecompressor, ZstdDecompressor } from './decompressors';
 
 
 export interface DecompresserOptions {
@@ -10,7 +10,7 @@ export interface DecompresserOptions {
 
 export class Decompressor extends EventSpewer {
   closed: boolean = false;
-  decompressor!: ZlibDecompressor;
+  decompressor!: ZlibDecompressor | ZstdDecompressor;
   type: string;
 
   constructor(options: DecompresserOptions) {
@@ -20,6 +20,11 @@ export class Decompressor extends EventSpewer {
     switch (this.type) {
       case CompressTypes.ZLIB: {
         this.decompressor = new ZlibDecompressor(Buffer.from(ZLIB_SUFFIX));
+        this.decompressor.on('data', (data) => this.emit('data', data));
+        this.decompressor.on('error', (error) => this.emit('error', error));
+      }; break;
+      case CompressTypes.ZSTD: {
+        this.decompressor = new ZstdDecompressor();
         this.decompressor.on('data', (data) => this.emit('data', data));
         this.decompressor.on('error', (error) => this.emit('error', error));
       }; break;
@@ -55,7 +60,12 @@ export class Decompressor extends EventSpewer {
   }
 
   static supported(): Array<string> {
-    const supported: Array<string> = [CompressTypes.ZLIB];
+    // in order of preference, `compress: true` picks the first one
+    const supported: Array<string> = [];
+    if (ZSTD_SUPPORTED) {
+      supported.push(CompressTypes.ZSTD);
+    }
+    supported.push(CompressTypes.ZLIB);
     return supported;
   }
 }
