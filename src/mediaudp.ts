@@ -34,6 +34,18 @@ import RTPCrypto, { RTP_NONCE_LENGTH } from './mediapackets/rtpcrypto';
 const IP_DISCOVERY_ATTEMPTS = 5;
 const IP_DISCOVERY_INTERVAL = 1000;
 
+// 20ms of 48kHz opus, the rtp timestamp step for one audio frame
+const AUDIO_FRAME_SAMPLES = 960;
+// keeps the NAT mapping open while we aren't sending any audio (receive-only/idle), same as discord.js
+const KEEPALIVE_INTERVAL = 5000;
+const KEEPALIVE_PACKET_LENGTH = 8;
+
+// `Object.values()` of a numeric enum also has the enum's names in it, keep the numbers in sets for the per packet lookups
+const RTCP_PACKET_TYPE_SET = new Set<number>((RTCP_PACKET_TYPES as ReadonlyArray<any>).filter((x) => typeof(x) === 'number'));
+const RTP_PAYLOAD_TYPE_SET = new Set<number>((RTP_PAYLOAD_TYPES as ReadonlyArray<any>).filter((x) => typeof(x) === 'number'));
+// frames are sent every 20ms, most without options, don't allocate an empty object for each (the options are only read)
+const DEFAULT_FRAME_OPTIONS: FrameOptions = Object.freeze({});
+
 export interface FrameOptions {
   incrementNonce?: boolean,
   incrementSequence?: boolean,
@@ -62,6 +74,8 @@ export interface TransportPacket {
   format: MediaCodecTypes | null,
   from: UDPFrom,
   rtp?: RTPPayload,
+  // the stream the packet belongs to, there's a user id once discord tells us whose it is (SPEAKING)
+  ssrc: number,
   userId: null | string,
 }
 
@@ -84,6 +98,11 @@ export class Socket extends EventSpewer {
     video?: RTPHeader,
   };
   key: null | Uint8Array;
+  keepAlive = {
+    counter: 0,
+    interval: new Timers.Interval(),
+    intervalTime: KEEPALIVE_INTERVAL,
+  };
   local: IpInformation;
   mediaGateway: MediaSocket;
   mode: null | string;
@@ -100,6 +119,7 @@ export class Socket extends EventSpewer {
     super();
 
     this.mediaGateway = mediaGateway;
+    this.onSend = this.onSend.bind(this);
 
     this.connected = false;
     this.key = null;
@@ -112,6 +132,9 @@ export class Socket extends EventSpewer {
       enumerable: false,
       writable: false,
     });
+    Object.defineProperty(this, 'keepAlive', {enumerable: false, writable: false});
+    // a keepalive alone shouldn't keep the process running
+    this.keepAlive.interval.unref();
 
     this.headers = {audio: new RTPHeader({randomize: true})};
     this.nonces = {audio: new RTPNonce({randomize: true})};
@@ -267,6 +290,8 @@ export class Socket extends EventSpewer {
     if (this.connected) {
       this.disconnect();
     }
+    // a key from a previous voice session would encrypt frames the new server can't decrypt, wait for its session description
+    this.key = null;
 
     const socket = this.socket = dgram.createSocket('udp4');
     const ipDiscoveryInterval = new Timers.Interval();
@@ -363,6 +388,7 @@ export class Socket extends EventSpewer {
       this.mediaGateway.sendClientConnect();
 
       socket.on('message', onPacket);
+      this.startKeepAlive();
       this.emit(SocketEvents.READY);
     };
     socket.on('message', onIpDiscovery);
@@ -375,6 +401,8 @@ export class Socket extends EventSpewer {
       if (this.socket === socket) {
         this.connected = false;
         this.socket = null;
+        this.key = null;
+        this.keepAlive.interval.stop();
         this.emit(SocketEvents.CLOSE);
       } else if (!this.socket) {
         // closed via `disconnect()`, no new socket replaced it
@@ -428,10 +456,13 @@ export class Socket extends EventSpewer {
   }
 
   disconnect(): void {
+    this.keepAlive.interval.stop();
     if (this.socket) {
       this.socket.close();
       this.socket = null;
     }
+    // the next connection is a new voice session with a new key
+    this.key = null;
     this.headers.audio.reset();
     if (this.headers.video) {
       this.headers.video.reset();
@@ -444,6 +475,10 @@ export class Socket extends EventSpewer {
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
       const error = new MediaPacketError('Received a packet from an unknown IP/Port', from, packet);
       this.emit(SocketEvents.WARN, error);
+      return;
+    }
+    if (packet.length === KEEPALIVE_PACKET_LENGTH) {
+      // the server echoes our keepalives back
       return;
     }
     if (!this.key) {
@@ -462,26 +497,14 @@ export class Socket extends EventSpewer {
       return;
     }
 
-    const packetType = packet.readUIntBE(1, 1);
-    if (RTCP_PACKET_TYPES.includes(packetType)) {
+    const packetType = packet[1];
+    if (RTCP_PACKET_TYPE_SET.has(packetType)) {
 
     } else {
-      const rtp: RTPPayload = {
-        header: new RTPHeader({buffer: packet.slice(0, 12)}),
-      };
-  
-      let payloadType = rtp.header.payloadType;
-      /*
-      // unknown if this is how it is now
-      let isRTX = false;
-      if (payloadType === this.rtxPayloadType) {
-        payloadType -= 1;
-        isRTX = true;
-      }
-      */
-      if (!RTP_PAYLOAD_TYPES.includes(payloadType)) {
-        const error = new MediaRTPError('Unknown RTP Packet Payload Type', from, packet, rtp);
-        this.emit(SocketEvents.WARN, error);
+      // read what we need from the bytes first, packets we drop never need the header object
+      const payloadType = packetType & 0x7F;
+      if (!RTP_PAYLOAD_TYPE_SET.has(payloadType)) {
+        this.emitRTPError(SocketEvents.WARN, 'Unknown RTP Packet Payload Type', from, packet);
         return;
       }
 
@@ -507,18 +530,20 @@ export class Socket extends EventSpewer {
       }
 
       if (format === MediaCodecTypes.VIDEO && !this.videoEnabled) {
-        const error = new MediaRTPError('Dropping video packet due to video not being enabled', from, packet, rtp);
-        this.emit(SocketEvents.LOG, error);
+        this.emitRTPError(SocketEvents.LOG, 'Dropping video packet due to video not being enabled', from, packet);
         return;
       }
+
+      const rtp: RTPPayload = {
+        header: RTPHeader.fromBuffer(packet.subarray(0, 12)),
+      };
 
       // rtpsize modes: the header (including csrcs and the extension preamble) is unencrypted and used as the additional data
       let headerLength = 12 + (rtp.header.csrcCount * 4);
       let extensionLength = 0;
       if (rtp.header.extension) {
         if (packet.length < headerLength + 4) {
-          const error = new MediaRTPError('Received an rtp packet with a truncated header extension', from, packet, rtp);
-          this.emit(SocketEvents.WARN, error);
+          this.emitRTPError(SocketEvents.WARN, 'Received an rtp packet with a truncated header extension', from, packet, rtp);
           return;
         }
         // RFC3550 Section 5.3.1, length is in 32-bit words and excludes the 4 byte preamble
@@ -542,8 +567,7 @@ export class Socket extends EventSpewer {
         rtp.nonce,
       );
       if (!data) {
-        const error = new MediaRTPError('Packet failed to decrypt', from, packet, rtp);
-        this.emit(SocketEvents.WARN, error);
+        this.emitRTPError(SocketEvents.WARN, 'Packet failed to decrypt', from, packet, rtp);
         return;
       }
 
@@ -573,14 +597,12 @@ export class Socket extends EventSpewer {
       const dave = this.mediaGateway.dave;
       if (dave && format === MediaCodecTypes.AUDIO) {
         if (userId === null) {
-          const error = new MediaRTPError('Dropping audio packet from an unknown ssrc, cannot e2e decrypt it', from, packet, rtp);
-          this.emit(SocketEvents.LOG, error);
+          this.emitRTPError(SocketEvents.LOG, 'Dropping audio packet from an unknown ssrc, cannot e2e decrypt it', from, packet, rtp);
           return;
         }
         const decrypted = dave.decrypt(data, userId);
         if (!decrypted) {
-          const error = new MediaRTPError('Packet failed to e2e decrypt', from, packet, rtp);
-          this.emit(SocketEvents.LOG, error);
+          this.emitRTPError(SocketEvents.LOG, 'Packet failed to e2e decrypt', from, packet, rtp);
           return;
         }
         data = decrypted;
@@ -592,9 +614,55 @@ export class Socket extends EventSpewer {
         format,
         from,
         rtp,
+        ssrc: rtp.header.ssrc,
         userId,
       } as TransportPacket);
     }
+  }
+
+  /**
+   * Only builds the error (and its stack trace) when something listens for it, dropped packets can come in at hundreds a second
+   */
+  emitRTPError(
+    event: string,
+    message: string,
+    from: UDPFrom,
+    packet: Buffer,
+    rtp?: RTPPayload,
+  ): void {
+    if (this.hasEventListener(event)) {
+      if (!rtp) {
+        rtp = {header: RTPHeader.fromBuffer(packet.subarray(0, 12))};
+      }
+      const error = new MediaRTPError(message, from, packet, rtp);
+      this.emit(event, error);
+    }
+  }
+
+  onSend(error: any, bytes: number): void {
+    if (error) {
+      this.emit(SocketEvents.WARN, error);
+    }
+  }
+
+  startKeepAlive(): void {
+    const socket = this.socket;
+    this.keepAlive.counter = 0;
+    this.keepAlive.interval.start(this.keepAlive.intervalTime, () => {
+      if (!this.connected || !this.socket || this.socket !== socket) {
+        this.keepAlive.interval.stop();
+        return;
+      }
+      // 8 bytes, an incrementing uint32 (little endian) in the first 4
+      const packet = Buffer.alloc(KEEPALIVE_PACKET_LENGTH);
+      packet.writeUInt32LE(this.keepAlive.counter, 0);
+      this.keepAlive.counter = (this.keepAlive.counter + 1) >>> 0;
+      try {
+        this.send(packet);
+      } catch(error) {
+        this.emit(SocketEvents.WARN, error);
+      }
+    });
   }
 
   send(packet: Buffer): void {
@@ -608,11 +676,7 @@ export class Socket extends EventSpewer {
       packet.length,
       this.remote.port!,
       this.remote.ip!,
-      (error: any, bytes: number) => {
-        if (error) {
-          this.emit(SocketEvents.WARN, error);
-        }
-      },
+      this.onSend,
     );
   }
 
@@ -620,34 +684,33 @@ export class Socket extends EventSpewer {
     packet: Buffer,
     options?: FrameOptions,
   ): void {
-    this.sendFrame(
-      packet,
-      Object.assign({}, options, {type: MediaCodecTypes.AUDIO}),
-    );
+    this._sendFrame(packet, MediaCodecTypes.AUDIO, options);
   }
 
   sendVideoFrame(
     packet: Buffer,
     options?: FrameOptions,
   ): void {
-    this.sendFrame(
-      packet,
-      Object.assign({}, options, {type: MediaCodecTypes.VIDEO}),
-    );
+    this._sendFrame(packet, MediaCodecTypes.VIDEO, options);
   }
 
   sendFrame(
     packet: Buffer,
-    options: FrameOptions = {},
+    options: FrameOptions = DEFAULT_FRAME_OPTIONS,
   ): void {
-    if (!this.connected) {
+    this._sendFrame(packet, options.type!, options);
+  }
+
+  _sendFrame(
+    packet: Buffer,
+    type: string,
+    options: FrameOptions = DEFAULT_FRAME_OPTIONS,
+  ): void {
+    // drop frames while (re)connecting, the key only arrives with the new session description
+    if (!this.connected || !this.key) {
       return;
     }
-    if (!this.key) {
-      throw new Error('Haven\'t received the session description yet');
-    }
 
-    const type = options.type!;
     if (type !== MediaCodecTypes.AUDIO && type !== MediaCodecTypes.VIDEO) {
       throw new Error('Invalid frame type');
     }
@@ -657,33 +720,25 @@ export class Socket extends EventSpewer {
       throw new Error('Cannot send in video frames when video is disabled!');
     }
 
-    let cache: {
-      header: RTPHeader,
-      nonce: RTPNonce,
-    };
-    switch (type) {
-      case MediaCodecTypes.AUDIO: {
-        cache = {
-          header: this.headers.audio!,
-          nonce: this.nonces.audio!,
-        };
-      }; break;
-      case MediaCodecTypes.VIDEO: {
-        cache = {
-          header: this.headers.video!,
-          nonce: this.nonces.video!,
-        };
-      }; break;
-      default: {
-        throw new Error(`Invalid type ${type}`);
-      };
+    const isAudio = (type === MediaCodecTypes.AUDIO);
+    const cachedHeader = (isAudio) ? this.headers.audio : this.headers.video!;
+    const cachedNonce = (isAudio) ? this.nonces.audio : this.nonces.video!;
+
+    let sequence = options.sequence;
+    let incrementSequence = options.incrementSequence;
+    let timestamp = options.timestamp;
+    let incrementTimestamp = options.incrementTimestamp;
+    if (useCache && timestamp === undefined && isAudio) {
+      // `setTimestamp(undefined)` picks a random timestamp, which breaks the receiver's jitter buffer, advance by one frame instead
+      timestamp = AUDIO_FRAME_SAMPLES;
+      incrementTimestamp = true;
     }
 
     let header: RTPHeader;
     let rtpNonce: RTPNonce;
     if (useCache) {
-      header = cache.header;
-      rtpNonce = cache.nonce;
+      header = cachedHeader;
+      rtpNonce = cachedNonce;
     } else {
       let payloadType: number, ssrc: number;
       switch (type) {
@@ -702,18 +757,18 @@ export class Socket extends EventSpewer {
       header = new RTPHeader({payloadType, ssrc});
       rtpNonce = new RTPNonce({randomize: true});
 
-      if (options.sequence === undefined) {
-        options.sequence = cache.header.sequence;
-        options.incrementSequence = false;
+      if (sequence === undefined) {
+        sequence = cachedHeader.sequence;
+        incrementSequence = false;
       }
-      if (options.timestamp === undefined) {
-        options.timestamp = cache.header.timestamp;
-        options.incrementTimestamp = false;
+      if (timestamp === undefined) {
+        timestamp = cachedHeader.timestamp;
+        incrementTimestamp = false;
       }
     }
 
-    header.setSequence(options.sequence, options.incrementSequence);
-    header.setTimestamp(options.timestamp, options.incrementTimestamp);
+    header.setSequence(sequence, incrementSequence);
+    header.setTimestamp(timestamp, incrementTimestamp);
     const nonce = rtpNonce.set(options.nonce, options.incrementNonce);
 
     const dave = this.mediaGateway.dave;
@@ -722,14 +777,13 @@ export class Socket extends EventSpewer {
     }
 
     // rtpsize modes: rtp header | encrypted payload + auth tag | 4 byte nonce
-    const encrypted = RTPCrypto.encrypt(this.mode!, this.key!, header.buffer, packet, nonce);
-    this.send(Buffer.concat([header.buffer, encrypted, nonce]));
+    this.send(RTPCrypto.encryptPacket(this.mode!, this.key!, header.buffer, packet, nonce));
   }
 
   sendAudioSilenceFrame(): void {
     this.sendFrame(Buffer.from(MediaSilencePacket), {
       incrementTimestamp: true,
-      timestamp: 960,
+      timestamp: AUDIO_FRAME_SAMPLES,
       type: MediaCodecTypes.AUDIO,
     });
   }

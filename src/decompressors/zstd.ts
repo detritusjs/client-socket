@@ -61,7 +61,7 @@ export class ZstdDecompressor extends EventSpewer {
 
   initialize(): void {
     this.close();
-    this.stream = zlib.createZstdDecompress({chunkSize: this.chunkSize});
+    this.stream = zlib.createZstdDecompress({chunkSize: this.chunkSize, flush: zlib.constants.ZSTD_e_flush});
     this.stream.on('data', this.onData.bind(this));
     this.stream.on('error', this.onError.bind(this));
     this.closed = false;
@@ -82,13 +82,12 @@ export class ZstdDecompressor extends EventSpewer {
     }
 
     const chunk = this.chunks.shift()!;
-    this.stream.write(chunk);
 
-    // each message is a whole payload, so flush it out before handling the next one
+    // each message is a whole payload, the stream flushes every write so its callback means all of the payload's data was emitted
     this.flushing = true;
     const stream = this.stream;
-    stream.flush(zlib.constants.ZSTD_e_flush, () => {
-      // ignore a flush from a stream that was replaced by reset() while it was flushing
+    stream.write(chunk, () => {
+      // ignore a write from a stream that was replaced by reset() while it was flushing
       if (stream === this.stream) {
         this.onFlush();
       }
@@ -108,13 +107,17 @@ export class ZstdDecompressor extends EventSpewer {
   }
 
   onFlush(): void {
-    if (this.dataChunks.length) {
-      const chunk = (this.dataChunks.length === 1) ? this.dataChunks.shift() : Buffer.concat(this.dataChunks);
-      this.dataChunks.length = 0;
-      this.emit('data', chunk);
+    try {
+      if (this.dataChunks.length) {
+        const chunk = (this.dataChunks.length === 1) ? this.dataChunks.shift() : Buffer.concat(this.dataChunks);
+        this.dataChunks.length = 0;
+        this.emit('data', chunk);
+      }
+    } finally {
+      // a throwing listener shouldn't leave us stuck as flushing, every later payload would just queue up
+      this.flushing = false;
+      this.write();
     }
-    this.flushing = false;
-    this.write();
   }
 
   on(event: string | symbol, listener: (...args: any[]) => void): this;

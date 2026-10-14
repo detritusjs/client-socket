@@ -19,6 +19,7 @@ import {
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
 } from './constants';
+import { SocketKillError } from './errors';
 import { Socket as GatewaySocket } from './gateway';
 import { DaveSession } from './mediadave';
 import { Socket as MediaUDPSocket } from './mediaudp';
@@ -280,19 +281,13 @@ export class Socket extends EventSpewer {
     this.bucket.lock();
 
     // unresumable events
-    // 1000 Normal Disconnected
-    // 4006 Session No Longer Valid
-    // 4009 Session Timeout
-    // 4014 Voice Channel Kick/Deleted
-    // 4016 Unknown Encryption Mode
-    // 4017 DAVE Protocol Required
-    // 4020 Bad Request
-    // 4021 Rate Limited
-    // 4022 Call Terminated
     switch (code) {
       case SocketCloseCodes.NORMAL:
+      case SocketMediaCloseCodes.AUTHENTICATION_FAILED:
       case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID:
       case SocketMediaCloseCodes.SESSION_TIMEOUT:
+      case SocketMediaCloseCodes.SERVER_NOT_FOUND:
+      case SocketMediaCloseCodes.UNKNOWN_PROTOCOL:
       case SocketMediaCloseCodes.DISCONNECTED:
       case SocketMediaCloseCodes.UNKNOWN_ENCRYPTION_MODE:
       case SocketMediaCloseCodes.DAVE_PROTOCOL_REQUIRED:
@@ -423,7 +418,6 @@ export class Socket extends EventSpewer {
         if (data['video_ssrc'] !== undefined) {
           this.ssrcs[MediaSSRCTypes.VIDEO].set(data.video_ssrc, data.user_id);
         }
-        // start the user id's decode/encoders
       }; break;
       case MediaOpCodes.CLIENT_DISCONNECT: {
         const data: MediaGatewayPackets.ClientDisconnect = packet.d;
@@ -468,9 +462,8 @@ export class Socket extends EventSpewer {
             video_codec: videoCodec,
           }: MediaGatewayPackets.SelectProtocolAckUDP = packet.d;
 
+          // set the key first, a failing dave session shouldn't leave the transport unable to send
           try {
-            this.setupDave(daveProtocolVersion || 0);
-
             this.transport
               .setAudioCodec(audioCodec)
               .setVideoCodec(videoCodec)
@@ -480,6 +473,22 @@ export class Socket extends EventSpewer {
           } catch(error) {
             this.emit(SocketEvents.WARN, error);
             return;
+          }
+          if (this.killed) {
+            return;
+          }
+
+          try {
+            this.setupDave(daveProtocolVersion || 0);
+          } catch(error) {
+            this.emit(SocketEvents.WARN, error);
+            // a half setup session would e2e encrypt with the wrong state
+            this.destroyDave();
+            if (daveProtocolVersion) {
+              // the call is e2ee, we can't send or receive anything without dave
+              this.kill(new Error(`Failed to setup the DAVE protocol (E2EE): ${(error as any)?.message || error}`));
+              return;
+            }
           }
           if (!this.killed) {
             this.emit(SocketEvents.TRANSPORT_READY, this.transport);
@@ -514,9 +523,6 @@ export class Socket extends EventSpewer {
       case MediaOpCodes.SPEAKING: {
         const data: MediaGatewayPackets.Speaking = packet.d;
         this.ssrcs[MediaSSRCTypes.AUDIO].set(data.ssrc, data.user_id);
-        // use the bitmasks Constants.Discord.SpeakingFlags
-        // emit it?
-        // check to see if it already existed, if not, create decode/encoders
       }; break;
       case MediaOpCodes.MEDIA_SINK_WANTS: {
         const data: MediaGatewayPackets.MediaSinkWants = packet.d;
@@ -618,10 +624,16 @@ export class Socket extends EventSpewer {
     }
   }
 
-  kill(error?: any): void {
+  kill(
+    error?: any,
+    options: {voiceStateUpdate?: boolean} = {},
+  ): void {
     if (this.killed) {return;}
-    const serverId = (this.inDm) ? null : this.serverId;
-    this.gateway.voiceStateUpdate(serverId, null);
+    // `voiceStateUpdate: false` when another session of ours took over this voice connection, leaving the channel would disconnect that session
+    if (options.voiceStateUpdate !== false) {
+      const serverId = (this.inDm) ? null : this.serverId;
+      this.gateway.voiceStateUpdate(serverId, null);
+    }
 
     Object.defineProperty(this, 'killed', {value: true});
     this.gateway.mediaGateways.delete(this.serverId);
@@ -660,6 +672,19 @@ export class Socket extends EventSpewer {
         case SocketMediaCloseCodes.UNKNOWN_ENCRYPTION_MODE: {
           // reconnecting would select the same mode again
           this.kill(new Error('Voice server rejected the selected encryption mode'));
+          return;
+        };
+        case SocketMediaCloseCodes.AUTHENTICATION_FAILED:
+        case SocketMediaCloseCodes.SERVER_NOT_FOUND:
+        case SocketMediaCloseCodes.UNKNOWN_PROTOCOL: {
+          // reconnecting would send the same rejected token/server/protocol again
+          this.kill(new SocketKillError(code, reason));
+          return;
+        };
+        case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID: {
+          // our session isn't in this voice channel anymore, usually another session of ours joined voice
+          // so don't send a voice state update, it would disconnect that session
+          this.kill(new SocketKillError(code, reason), {voiceStateUpdate: false});
           return;
         };
         case SocketMediaCloseCodes.DISCONNECTED:

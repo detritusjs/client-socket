@@ -142,18 +142,19 @@ export class ZlibDecompressor extends EventSpewer {
         }
       }; break;
       case DependencyTypes.ZLIB: {
-        this.inflate.write(chunk);
         if (isEnd) {
+          // the inflate sync flushes every write, so once this write's callback fires all of the payload's data was emitted
           this.flushing = true;
           const inflate = this.inflate;
-          this.inflate.flush(Inflate.flushCode, (error: any) => {
-            // ignore a flush from an inflate that was replaced by reset() while it was flushing
+          this.inflate.write(chunk, (error: any) => {
+            // ignore a write from an inflate that was replaced by reset() while it was flushing
             if (inflate === this.inflate) {
               this.onFlush(error);
             }
           });
           return;
         }
+        this.inflate.write(chunk);
       }; break;
     }
     this.write();
@@ -182,13 +183,17 @@ export class ZlibDecompressor extends EventSpewer {
     if (error) {
       return;
     }
-    if (this.dataChunks.length) {
-      const chunk = (this.dataChunks.length === 1) ? this.dataChunks.shift() : Buffer.concat(this.dataChunks);
-      this.dataChunks.length = 0;
-      this.emit('data', chunk);
+    try {
+      if (this.dataChunks.length) {
+        const chunk = (this.dataChunks.length === 1) ? this.dataChunks.shift() : Buffer.concat(this.dataChunks);
+        this.dataChunks.length = 0;
+        this.emit('data', chunk);
+      }
+    } finally {
+      // a throwing listener shouldn't leave us stuck as flushing, every later payload would just queue up
+      this.flushing = false;
+      this.write();
     }
-    this.flushing = false;
-    this.write();
   }
 
   on(event: string | symbol, listener: (...args: any[]) => void): this;

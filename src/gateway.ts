@@ -92,6 +92,8 @@ export class Socket extends EventSpewer {
   readonly state: SocketStates = SocketStates.CLOSED;
 
   _lastSocket: BaseSocket | null = null;
+  _packetImmediate: ReturnType<typeof setImmediate> | null = null;
+  _packetQueue: Array<any> = [];
   _reconnectTimeout = new Timers.Timeout();
   _heartbeat: {
     ack: boolean,
@@ -165,6 +167,7 @@ export class Socket extends EventSpewer {
     this.shardId = options.shardId as number;
     this.token = token;
 
+    this.emitPackets = this.emitPackets.bind(this);
     this.onIdentifyCheck = options.onIdentifyCheck || this.onIdentifyCheck;
 
     if (options.presence) {
@@ -191,6 +194,8 @@ export class Socket extends EventSpewer {
 
     // reserve a few of the 120 per minute for heartbeats and identify/resume, which skip the queue
     this.bucket = new Bucket(120, 60 * 1000, 5);
+    // regular sends wait for READY/RESUMED, sending anything before identifying gets the socket closed with 4003
+    this.bucket.lock();
 
     this.decompressor = null;
     switch (this.compress) {
@@ -235,7 +240,10 @@ export class Socket extends EventSpewer {
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
       _lastSocket: {enumerable: false},
+      _packetImmediate: {enumerable: false},
+      _packetQueue: {enumerable: false, writable: false},
       _reconnectTimeout: {enumerable: false, writable: false},
+      emitPackets: {enumerable: false},
       identifyProperties: {enumerable: false},
       killed: {configurable: true},
       state: {configurable: true, writable: false},
@@ -378,19 +386,10 @@ export class Socket extends EventSpewer {
       this.decompressor.reset();
     }
 
-    // un-resumable events
-    // 1000
-    // 4007 Invalid Sequence
-    // 4009 Session Timed Out
-    // un-resumable and kill socket
-    // 4004 Authentication Failed
-    // 4010 Invalid Shard Sent
-    // 4011 Sharding Required
-    // 4012 Invalid Gateway Version
-    // 4013 Invalid Intents Sent
     if (code !== undefined) {
       code = parseInt(code as string);
       switch (code) {
+        // un-resumable events
         case SocketCloseCodes.NORMAL:
         case SocketGatewayCloseCodes.INVALID_SEQUENCE:
         case SocketGatewayCloseCodes.SESSION_TIMEOUT:
@@ -399,6 +398,7 @@ export class Socket extends EventSpewer {
           this.sessionId = null;
           this.resumeGatewayUrl = null;
         }; break;
+        // un-resumable and kill socket
         case SocketGatewayCloseCodes.AUTHENTICATION_FAILED:
         case SocketGatewayCloseCodes.INVALID_SHARD:
         case SocketGatewayCloseCodes.SHARDING_REQUIRED:
@@ -540,7 +540,9 @@ export class Socket extends EventSpewer {
 
     switch (packet.op) {
       case GatewayOpCodes.HEARTBEAT: {
-        this.heartbeat();
+        // discord asked for one, send it without clearing `ack`
+        // otherwise our interval firing before this one's ack comes back would see a zombie and reconnect
+        this.heartbeat(false, true);
       }; break;
       case GatewayOpCodes.HEARTBEAT_ACK: {
         this._heartbeat.ack = true;
@@ -592,9 +594,37 @@ export class Socket extends EventSpewer {
       }; break;
     }
 
-    setImmediate(() => {
-      this.emit(SocketEvents.PACKET, packet);
-    });
+    // nothing listens for the raw packets most of the time, don't schedule anything for them
+    if (this.hasEventListener(SocketEvents.PACKET)) {
+      this._packetQueue.push(packet);
+      if (!this._packetImmediate) {
+        this._packetImmediate = setImmediate(this.emitPackets);
+      }
+    }
+  }
+
+  /**
+   * Emits the queued raw packets in order, one immediate for every packet handled in the same tick
+   */
+  emitPackets(): void {
+    const queue = this._packetQueue;
+    // packets queued while emitting wait for the next immediate, like they would with their own `setImmediate()`
+    const end = queue.length;
+    let i = 0;
+    try {
+      while (i < end && i < queue.length) {
+        this.emit(SocketEvents.PACKET, queue[i++]);
+      }
+    } finally {
+      // a throwing listener still surfaces as an uncaught exception, the rest of the packets go out on the next immediate
+      if (i < queue.length) {
+        queue.splice(0, i);
+        this._packetImmediate = setImmediate(this.emitPackets);
+      } else {
+        queue.length = 0;
+        this._packetImmediate = null;
+      }
+    }
   }
 
   handleDispatch(
@@ -650,7 +680,8 @@ export class Socket extends EventSpewer {
           if (!data['channel_id']) {
             gateway.kill();
           } else if (gateway.sessionId !== data['session_id']) {
-            gateway.kill(new Error('Connected to this server from a different session'));
+            // leaving the channel would disconnect the session that took over
+            gateway.kill(new Error('Connected to this server from a different session'), {voiceStateUpdate: false});
           } else {
             gateway.setChannelId(data['channel_id']);
             gateway.resolvePromises();
@@ -675,6 +706,12 @@ export class Socket extends EventSpewer {
       }
       this.emit(SocketEvents.KILLED, {error});
       this.removeAllListeners();
+      // the queued packets have no one left to go to
+      if (this._packetImmediate) {
+        clearImmediate(this._packetImmediate);
+        this._packetImmediate = null;
+      }
+      this._packetQueue.length = 0;
     }
   }
 
@@ -793,12 +830,14 @@ export class Socket extends EventSpewer {
     }
   }
 
-  heartbeat(fromInterval: boolean = false): void {
+  heartbeat(fromInterval: boolean = false, requested: boolean = false): void {
     if (fromInterval && !this._heartbeat.ack) {
       this.disconnect(SocketInternalCloseCodes.HEARTBEAT_ACK);
       this.connect();
     } else {
-      this._heartbeat.ack = false;
+      if (!requested) {
+        this._heartbeat.ack = false;
+      }
       this._heartbeat.lastSent = Date.now();
       const sequence = (this.sequence) ? this.sequence : null;
       this.send(GatewayOpCodes.HEARTBEAT, sequence, undefined, true);
@@ -847,8 +886,6 @@ export class Socket extends EventSpewer {
       this.setState(SocketStates.RESUMING);
     }, true);
   }
-
-  /* user callable function */
 
   callConnect(
     channelId: string,

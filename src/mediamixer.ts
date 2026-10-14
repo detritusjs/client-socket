@@ -1,3 +1,5 @@
+import * as os from 'os';
+
 import { EventSpewer } from 'detritus-utils';
 
 
@@ -15,6 +17,30 @@ const PCM_MIN = -32768;
 const RECENT_TIMESTAMPS_SIZE = 16;
 // if the event loop stalls for longer than this many frames, skip ahead instead of emitting a burst
 const MAX_CATCH_UP_FRAMES = 10;
+
+// typed arrays use the platform's byte order, the pcm is always little-endian
+const IS_LITTLE_ENDIAN = (os.endianness() === 'LE');
+
+
+/**
+ * Reads the first `length` 16-bit little-endian samples of `pcm` as an Int16Array, without copying when possible
+ */
+function pcmToInt16Array(pcm: Buffer, length: number): Int16Array {
+  if (IS_LITTLE_ENDIAN) {
+    if (!(pcm.byteOffset % BYTE_DEPTH)) {
+      return new Int16Array(pcm.buffer, pcm.byteOffset, length);
+    }
+    // an Int16Array view has to start on a 2-byte boundary, copy the bytes into an aligned one
+    const samples = new Int16Array(length);
+    new Uint8Array(samples.buffer).set(pcm.subarray(0, length * BYTE_DEPTH));
+    return samples;
+  }
+  const samples = new Int16Array(length);
+  for (let i = 0; i < length; i++) {
+    samples[i] = pcm.readInt16LE(i * BYTE_DEPTH);
+  }
+  return samples;
+}
 
 
 export interface AudioMixerFormat {
@@ -228,11 +254,20 @@ export class AudioMixer extends EventSpewer {
     // (writing past the end of the buffer would wrap around onto the slots that are about to be emitted)
     const start = Math.max(this.position - position, 0);
     const end = Math.min(samples, this.position + this.bufferSamples - position);
-    for (let i = start; i < end; i++) {
-      const index = ((position + i) % this.bufferSamples) * channels;
-      const offset = i * sampleSize;
-      for (let channel = 0; channel < channels; channel++) {
-        this.buffer[index + channel] += pcm.readInt16LE(offset + channel * BYTE_DEPTH);
+    if (start < end) {
+      const buffer = this.buffer;
+      const values = pcmToInt16Array(pcm, end * channels);
+      // the range never covers more than the whole ring buffer, so it's at most two contiguous parts, the second one wrapping around to the start
+      const length = (end - start) * channels;
+      const index = ((position + start) % this.bufferSamples) * channels;
+      const firstLength = Math.min(length, buffer.length - index);
+      let offset = start * channels;
+      for (let i = 0; i < firstLength; i++) {
+        buffer[index + i] += values[offset + i];
+      }
+      offset += firstLength;
+      for (let i = 0, wrapped = length - firstLength; i < wrapped; i++) {
+        buffer[i] += values[offset + i];
       }
     }
   }
@@ -323,24 +358,57 @@ export class AudioMixer extends EventSpewer {
   }
 
   protected read(): Buffer | null {
-    const channels = this.format.channels;
+    const buffer = this.buffer;
     const samples = this.format.samplesPerFrame;
 
-    const frame = Buffer.alloc(this.format.frameSize);
+    // a frame is at most two contiguous parts of the ring buffer, the second one wrapping around to the start
+    const length = samples * this.format.channels;
+    const index = (this.position % this.bufferSamples) * this.format.channels;
+    const firstLength = Math.min(length, buffer.length - index);
+    const wrapped = length - firstLength;
+    this.position += samples;
+
     let silent = true;
-    for (let i = 0; i < samples; i++) {
-      const index = ((this.position + i) % this.bufferSamples) * channels;
-      for (let channel = 0; channel < channels; channel++) {
-        let sample = this.buffer[index + channel];
-        if (sample) {
+    for (let i = index, last = index + firstLength; i < last; i++) {
+      if (buffer[i]) {
+        silent = false;
+        break;
+      }
+    }
+    if (silent) {
+      for (let i = 0; i < wrapped; i++) {
+        if (buffer[i]) {
           silent = false;
-          this.buffer[index + channel] = 0;
-          frame.writeInt16LE(Math.min(Math.max(sample, PCM_MIN), PCM_MAX), (i * channels + channel) * BYTE_DEPTH);
+          break;
         }
       }
     }
-    this.position += samples;
-    return (silent && this.skipSilence) ? null : frame;
+    if (silent) {
+      // the slots are already zeroed
+      return (this.skipSilence) ? null : Buffer.alloc(this.format.frameSize);
+    }
+
+    // every sample gets written below, and `allocUnsafeSlow()` keeps the frame on its own ArrayBuffer like `alloc()` (not the shared pool)
+    const frame = Buffer.allocUnsafeSlow(this.format.frameSize);
+    const values = (IS_LITTLE_ENDIAN) ? new Int16Array(frame.buffer, frame.byteOffset, length) : new Int16Array(length);
+    for (let i = 0; i < firstLength; i++) {
+      const sample = buffer[index + i];
+      values[i] = (sample < PCM_MIN) ? PCM_MIN : ((PCM_MAX < sample) ? PCM_MAX : sample);
+    }
+    for (let i = 0; i < wrapped; i++) {
+      const sample = buffer[i];
+      values[firstLength + i] = (sample < PCM_MIN) ? PCM_MIN : ((PCM_MAX < sample) ? PCM_MAX : sample);
+    }
+    buffer.fill(0, index, index + firstLength);
+    if (wrapped) {
+      buffer.fill(0, 0, wrapped);
+    }
+    if (!IS_LITTLE_ENDIAN) {
+      for (let i = 0; i < length; i++) {
+        frame.writeInt16LE(values[i], i * BYTE_DEPTH);
+      }
+    }
+    return frame;
   }
 
   protected clear(position: number, samples: number): void {

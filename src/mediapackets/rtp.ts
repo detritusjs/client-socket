@@ -4,30 +4,45 @@ import { RTP_NONCE_LENGTH } from './rtpcrypto';
 export const ValidRTPVersion = 2;
 
 export function isValidRTPHeader(buffer: Buffer): boolean {
-  return ((buffer.readUIntBE(0, 1) >> 6) === 2);
+  return ((buffer[0] >> 6) === ValidRTPVersion);
 };
 
+export interface RTPHeaderOptions {
+  buffer?: Buffer,
+  marker?: boolean,
+  payloadType?: number,
+  randomize?: boolean,
+  ssrc?: number,
+  version?: number,
+}
+
+// `fromBuffer()` passes this instead of allocating options for every received packet, the buffer is swapped right after
+const FROM_BUFFER_OPTIONS: RTPHeaderOptions = Object.freeze({buffer: Buffer.alloc(0)});
+
 export class RTPHeader {
-  buffer: Buffer;
+  // a private field instead of a non-enumerable, non-writable `buffer` (`Object.defineProperty()` per packet is slow)
+  // it stays out of `Object.keys()`/JSON/inspect output and can't be reassigned, same as before
+  #buffer: Buffer;
   nonce?: Buffer;
   payload?: Buffer;
 
+  /**
+   * Wraps a received packet's header bytes without copying them
+   */
+  static fromBuffer(buffer: Buffer): RTPHeader {
+    const header = new RTPHeader(FROM_BUFFER_OPTIONS);
+    header.#buffer = buffer;
+    return header;
+  }
+
   constructor(
-    options: {
-      buffer?: Buffer,
-      marker?: boolean,
-      payloadType?: number,
-      randomize?: boolean,
-      ssrc?: number,
-      version?: number,
-    } = {},
+    options: RTPHeaderOptions = {},
   ) {
     if (options.buffer) {
-      this.buffer = options.buffer;
+      this.#buffer = options.buffer;
     } else {
-      this.buffer = Buffer.alloc(12);
+      this.#buffer = Buffer.alloc(12);
     }
-    Object.defineProperty(this, 'buffer', {enumerable: false, writable: false});
 
     if (!options.buffer && options.version === undefined) {
       options.version = ValidRTPVersion;
@@ -55,6 +70,10 @@ export class RTPHeader {
     }
   }
 
+  get buffer(): Buffer {
+    return this.#buffer;
+  }
+
   get length(): number {
     return this.buffer.length;
   }
@@ -64,11 +83,11 @@ export class RTPHeader {
   }
 
   get firstByte(): number {
-    return this.buffer.readUIntBE(0, 1);
+    return this.buffer[0];
   }
 
   get secondByte(): number {
-    return this.buffer.readUIntBE(1, 1);
+    return this.buffer[1];
   }
 
   get version(): number {
@@ -95,24 +114,21 @@ export class RTPHeader {
     return this.secondByte & 0x7F;
   }
 
-  /* header[2, 3] = sequence*/
   get sequence(): number {
-    return this.buffer.readUIntBE(2, 2);
+    return this.buffer.readUInt16BE(2);
   }
 
-  /* header[4, 5, 6, 7] = timestamp*/
   get timestamp(): number {
-    return this.buffer.readUIntBE(4, 4);
+    return this.buffer.readUInt32BE(4);
   }
 
-  /* header[8, 9, 10, 11] = ssrc*/
   get ssrc(): number {
-    return this.buffer.readUIntBE(8, 4);
+    return this.buffer.readUInt32BE(8);
   }
 
   get nonceNumber(): number {
     if (this.nonce) {
-      return this.nonce.readUIntBE(0, 4);
+      return this.nonce.readUInt32BE(0);
     }
     return 0;
   }
@@ -181,7 +197,7 @@ export class RTPHeader {
       sequence += this.sequence;
     }
     sequence %= (MaxNumbers.UINT16 + 1);
-    this.buffer.writeUIntBE(sequence, 2, 2);
+    this.buffer.writeUInt16BE(sequence, 2);
   }
 
   setTimestamp(
@@ -196,7 +212,7 @@ export class RTPHeader {
       timestamp += this.timestamp;
     }
     timestamp %= (MaxNumbers.UINT32 + 1);
-    this.buffer.writeUIntBE(timestamp, 4, 4);
+    this.buffer.writeUInt32BE(timestamp, 4);
   }
 
   setSSRC(ssrc: number): void {
@@ -206,7 +222,7 @@ export class RTPHeader {
     if (MaxNumbers.UINT32 < ssrc) {
       throw new Error(`SSRC must not be over ${MaxNumbers.UINT32}`);
     }
-    this.buffer.writeUIntBE(ssrc, 8, 4);
+    this.buffer.writeUInt32BE(ssrc, 8);
   }
 
   setPayload(
@@ -279,23 +295,27 @@ export class RTPHeader {
 }
 
 export class RTPNonce {
-  buffer: Buffer;
+  // see `RTPHeader`, a private field keeps `buffer` non-enumerable and read-only without a `defineProperty()` per instance
+  #buffer: Buffer;
 
   constructor(
     options: {
       randomize?: boolean,
     } = {},
   ) {
-    this.buffer = Buffer.alloc(RTP_NONCE_LENGTH);
-    Object.defineProperty(this, 'buffer', {enumerable: false, writable: false});
+    this.#buffer = Buffer.alloc(RTP_NONCE_LENGTH);
 
     if (options.randomize || options.randomize === undefined) {
       this.randomize();
     }
   }
 
+  get buffer(): Buffer {
+    return this.#buffer;
+  }
+
   get number(): number {
-    return this.buffer.readUIntBE(0, 4);
+    return this.buffer.readUInt32BE(0);
   }
 
   copy(
@@ -323,7 +343,7 @@ export class RTPNonce {
       nonce = this.number + nonce;
     }
     nonce %= (MaxNumbers.UINT32 + 1);
-    this.buffer.writeUIntBE(nonce, 0, 4);
+    this.buffer.writeUInt32BE(nonce, 0);
     return this.buffer;
   }
 }
