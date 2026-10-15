@@ -10,12 +10,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules"],
-  "typedocOptions": {
-    "name": "Detritus Socket Client",
-    "out": "./docs",
-    "entryPoints": [
-      "./src"
-    ]
-  }
+  "exclude": ["node_modules"]
 }

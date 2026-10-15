@@ -190,7 +190,8 @@ export class Socket extends EventSpewer {
   }
 
   setEndpoint(value: null | string): void {
-    this.endpoint = (value) ? `wss://${value.split(':').shift()}` : null;
+    // keep the port, each port on a voice host is a different server and the others don't know our session (4006)
+    this.endpoint = (value) ? `wss://${value}` : null;
     this.identified = false;
     if (!this.endpoint) {
       // discord is reallocating the voice server, wait for the next VOICE_SERVER_UPDATE with an endpoint
