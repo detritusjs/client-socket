@@ -6,28 +6,13 @@ import {
 } from './constants';
 
 
+// `ws` is a regular dependency, so it's always installed
+const WebSocket = require('ws');
+
+
 export enum DependencyTypes {
-  UWS = 'uws',
   WS = 'ws',
 }
-
-export const WebsocketDependency: {
-  module: any,
-  type: null | DependencyTypes,
-} = {
-  module: null,
-  type: null,
-};
-
-[
-  DependencyTypes.WS,
-  DependencyTypes.UWS,
-].forEach((dependency) => {
-  try {
-    WebsocketDependency.module = require(dependency);
-    WebsocketDependency.type = dependency;
-  } catch(e) {}
-});
 
 export class BaseSocket extends EventSpewer {
   readonly pings = new BaseCollection<string, {
@@ -40,11 +25,7 @@ export class BaseSocket extends EventSpewer {
   constructor(url: string) {
     super();
 
-    if (WebsocketDependency.module === null) {
-      throw new Error(`Missing a WebSocket Dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`)
-    }
-
-    this.socket = new WebsocketDependency.module(url);
+    this.socket = new WebSocket(url);
     this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this));
     this.socket.on(SocketEventsBase.PONG, this.onPong.bind(this));
 
@@ -71,10 +52,7 @@ export class BaseSocket extends EventSpewer {
   }
 
   get using(): DependencyTypes {
-    if (!WebsocketDependency.type) {
-      throw new Error(`Missing a WebSocket Dependency, pick one: ${JSON.stringify(Object.values(DependencyTypes))}`);
-    }
-    return WebsocketDependency.type;
+    return DependencyTypes.WS;
   }
 
   send(data: any, callback?: Function): void {

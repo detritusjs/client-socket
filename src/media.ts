@@ -645,7 +645,7 @@ export class Socket extends EventSpewer {
     }
     this.destroyDave();
     this.resolvePromises(error || new Error('Media Gateway was killed.'));
-    this.emit(SocketEvents.KILLED);
+    this.emit(SocketEvents.KILLED, {error});
     this.removeAllListeners();
   }
 
@@ -1008,7 +1008,7 @@ export class Socket extends EventSpewer {
 
   on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
-  on(event: 'killed', listener: () => any): this;
+  on(event: 'killed', listener: (payload: {error?: Error}) => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
   on(event: 'packet', listener: (packet: MediaGatewayPackets.Packet) => any): this;
   on(event: 'ready', listener: () => any): this;
