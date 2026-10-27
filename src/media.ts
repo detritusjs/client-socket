@@ -404,6 +404,12 @@ export class Socket extends EventSpewer {
         this.bucket.unlock();
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
+        // a resume keeps the udp transport and its key and gets no new session description, so this is the only
+        // signal that audio can be sent again. No key means the transport reconnected, its session description follows
+        const transport = this.transport;
+        if (transport && transport.connected && transport.key) {
+          this.emit(SocketEvents.TRANSPORT_READY, transport);
+        }
       }; break;
       case MediaOpCodes.CLIENTS_CONNECT: {
         const data: MediaGatewayPackets.ClientsConnect = packet.d;
