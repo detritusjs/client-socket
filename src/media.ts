@@ -45,6 +45,9 @@ const defaultOptions = {
   video: false,
 };
 
+// how long discord gets to send a new voice server after we ask for one
+const NEW_SERVER_TIMEOUT = 15 * 1000;
+
 export class Socket extends EventSpewer {
   readonly state: SocketStates = SocketStates.CLOSED;
 
@@ -73,11 +76,19 @@ export class Socket extends EventSpewer {
   identified: boolean = false;
   ipDiscoveryFailures: number = 0;
   killed: boolean = false;
+  // waiting on the voice server discord gives us after the last one stopped answering, see `requestNewServer()`
+  newServerTimeout = new Timers.Timeout();
   promises = new Set<{reject: Function, resolve: Function}>();
   protocol: MediaProtocols | null = null;
   ready: boolean = false;
   receiveEnabled: boolean = false;
   reconnects: number = 0;
+  // whether we asked discord for a new voice server since we last connected to one
+  requestedNewServer: boolean = false;
+  // our voice state as discord last sent it, sent again as is when asking for a new voice server
+  selfDeaf: boolean = false;
+  selfMute: boolean = false;
+  selfVideo: boolean = false;
   // last sequence number received from the server, sent back as `seq_ack`
   sequence: number = -1;
   serverId: string;
@@ -250,6 +261,7 @@ export class Socket extends EventSpewer {
 
   setToken(value: string): void {
     Object.defineProperty(this, 'token', {value});
+    this.newServerTimeout.stop();
     if (!this.identified && this.endpoint) {
       this.resolvePromises();
       try {
@@ -414,6 +426,7 @@ export class Socket extends EventSpewer {
         const data: MediaGatewayPackets.Ready = packet.d;
 
         this.reconnects = 0;
+        this.requestedNewServer = false;
         Object.defineProperty(this, 'ready', {value: true});
         this.identified = true;
         this.bucket.unlock();
@@ -428,6 +441,7 @@ export class Socket extends EventSpewer {
       }; break;
       case MediaOpCodes.RESUMED: {
         this.reconnects = 0;
+        this.requestedNewServer = false;
         Object.defineProperty(this, 'ready', {value: true});
         this.bucket.unlock();
         this.setState(SocketStates.READY);
@@ -696,6 +710,25 @@ export class Socket extends EventSpewer {
     }
   }
 
+  /**
+   * The voice server stopped answering, asks discord for another one by sending our voice state again (same channel,
+   * nothing about it changes). The VOICE_SERVER_UPDATE it answers with connects us there through `setEndpoint()` and
+   * `setToken()`, the transport comes back with a TRANSPORT_READY. Once per server, if the new one fails too we die
+   */
+  requestNewServer(): void {
+    this.requestedNewServer = true;
+    this.reconnects = 0;
+    this.emit(SocketEvents.WARN, new Error(`Voice server stopped answering after ${this.gateway.reconnectMax} reconnects, asking for a new one`));
+    this.newServerTimeout.start(NEW_SERVER_TIMEOUT, () => {
+      this.kill(new Error(`Tried reconnecting ${this.gateway.reconnectMax} times, and no new voice server came within ${NEW_SERVER_TIMEOUT}ms.`));
+    });
+    this.gateway.voiceStateUpdate(this.guildId, this.channelId, {
+      selfDeaf: this.selfDeaf,
+      selfMute: this.selfMute,
+      selfVideo: this.selfVideo,
+    });
+  }
+
   kill(
     error?: any,
     options: {voiceStateUpdate?: boolean} = {},
@@ -708,6 +741,7 @@ export class Socket extends EventSpewer {
     }
 
     Object.defineProperty(this, 'killed', {value: true});
+    this.newServerTimeout.stop();
     this.gateway.mediaGateways.delete(this.serverId);
     this.disconnect(SocketCloseCodes.NORMAL);
     if (this.transport) {
@@ -768,7 +802,11 @@ export class Socket extends EventSpewer {
       }
       if (this.gateway.autoReconnect && !this.killed) {
         if (this.gateway.reconnectMax <= this.reconnects) {
-          this.kill();
+          if (this.requestedNewServer) {
+            this.kill(new Error(`Tried reconnecting ${this.gateway.reconnectMax} times.`));
+          } else {
+            this.requestNewServer();
+          }
         } else {
           this.emit(SocketEvents.RECONNECTING);
           setTimeout(() => {

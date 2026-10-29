@@ -684,6 +684,9 @@ export class Socket extends EventSpewer {
             gateway.kill(new Error('Connected to this server from a different session'), {voiceStateUpdate: false});
           } else {
             gateway.setChannelId(data['channel_id']);
+            gateway.selfDeaf = !!data['self_deaf'];
+            gateway.selfMute = !!data['self_mute'];
+            gateway.selfVideo = !!data['self_video'];
             gateway.resolvePromises();
           }
         }
