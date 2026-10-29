@@ -1,6 +1,9 @@
 import { EventSpewer } from 'detritus-utils';
 
 import {
+  DaveCodecs,
+  DaveMediaTypes,
+  MediaCodecs,
   MediaDaveTransition,
   MediaSilencePacket,
   DAVE_MODULE,
@@ -220,7 +223,7 @@ export class DaveSession extends EventSpewer {
       return packet;
     }
     try {
-      const data: Buffer = this.session.decrypt(userId, Davey.MediaType.AUDIO, packet);
+      const data: Buffer = this.session.decrypt(userId, DaveMediaTypes.AUDIO, packet);
       this.consecutiveFailures = 0;
       return data;
     } catch(error) {
@@ -236,6 +239,44 @@ export class DaveSession extends EventSpewer {
       }
     }
     return null;
+  }
+
+  /**
+   * Video is encrypted per frame, before it's split into rtp packets (h264 as annex b)
+   * The codec matters, DAVE leaves the parts of a frame the sfu and decoders need to read (nal headers, frame tags) as is
+   */
+  encryptVideo(frame: Buffer, codec: MediaCodecs | string): Buffer {
+    if (this.protocolVersion === 0 || !this.ready) {
+      return frame;
+    }
+    let daveCodec = DaveCodecs.UNKNOWN;
+    switch (codec) {
+      case MediaCodecs.H264: daveCodec = DaveCodecs.H264; break;
+      case MediaCodecs.VP8: daveCodec = DaveCodecs.VP8; break;
+      case MediaCodecs.VP9: daveCodec = DaveCodecs.VP9; break;
+    }
+    return this.session.encrypt(DaveMediaTypes.VIDEO, daveCodec, frame);
+  }
+
+  /**
+   * Video is encrypted per frame (before it's split into rtp packets), so this takes a whole reassembled frame
+   * Returns null if the frame couldn't be decrypted
+   */
+  decryptVideo(frame: Buffer, userId: string): Buffer | null {
+    if (!this.session) {
+      return frame;
+    }
+    const canDecrypt = this.ready && (this.protocolVersion !== 0 || this.session.canPassthrough(userId));
+    if (!canDecrypt) {
+      return frame;
+    }
+    try {
+      return this.session.decrypt(userId, DaveMediaTypes.VIDEO, frame);
+    } catch(error) {
+      // unlike audio, these don't count towards recovering the session, we only see video from users we asked for
+      // and a codec quirk shouldn't be able to make us tear down the group
+      return null;
+    }
   }
 
   destroy(): void {

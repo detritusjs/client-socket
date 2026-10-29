@@ -9,6 +9,7 @@ import {
   MediaProtocols,
   MediaSpeakingFlags,
   MediaSSRCTypes,
+  MediaStreamTypes,
   SocketCloseCodes,
   SocketEvents,
   SocketEventsBase,
@@ -85,6 +86,10 @@ export class Socket extends EventSpewer {
     [MediaSSRCTypes.AUDIO]: new Map<number, string>(),
     [MediaSSRCTypes.VIDEO]: new Map<number, string>(),
   };
+  // other users' retransmission ssrcs to the video ssrc they retransmit for
+  rtxSSRCs = new Map<number, number>();
+  // our own video streams, as assigned by the server in READY
+  streams: Array<MediaGatewayPackets.Stream> = [];
   transport: MediaUDPSocket | null = null;
   token: null | string = null;
   userId: string;
@@ -159,12 +164,21 @@ export class Socket extends EventSpewer {
     return (this.transport) ? this.transport.ssrc : 0;
   }
 
+  // the server assigns these in READY's `streams`, older servers leave it empty and expect audio + 1 and audio + 2
   get videoSSRC(): number {
-    return (this.videoEnabled) ? this.audioSSRC + 1 : 0;
+    if (!this.videoEnabled) {
+      return 0;
+    }
+    const stream = this.streams.find((x) => x.type === MediaStreamTypes.VIDEO);
+    return (stream && stream.ssrc) ? stream.ssrc : this.audioSSRC + 1;
   }
 
   get rtxSSRC(): number {
-    return (this.videoEnabled) ? this.videoSSRC + 1 : 0;
+    if (!this.videoEnabled) {
+      return 0;
+    }
+    const stream = this.streams.find((x) => x.type === MediaStreamTypes.VIDEO);
+    return (stream && stream.rtx_ssrc) ? stream.rtx_ssrc : this.videoSSRC + 1;
   }
 
   resolvePromises(error?: any) {
@@ -274,6 +288,14 @@ export class Socket extends EventSpewer {
     return null;
   }
 
+  /**
+   * The video ssrc a retransmission (rtx) ssrc resends packets for
+   */
+  rtxToSSRC(rtxSSRC: number): null | number {
+    const ssrc = this.rtxSSRCs.get(rtxSSRC);
+    return (ssrc === undefined) ? null : ssrc;
+  }
+
   cleanup(
     code?: number,
   ): void {
@@ -303,6 +325,7 @@ export class Socket extends EventSpewer {
       this.connectedUserIds.clear();
       this.ssrcs[MediaSSRCTypes.AUDIO].clear();
       this.ssrcs[MediaSSRCTypes.VIDEO].clear();
+      this.rtxSSRCs.clear();
       this.destroyDave();
     }
 
@@ -394,7 +417,12 @@ export class Socket extends EventSpewer {
         Object.defineProperty(this, 'ready', {value: true});
         this.identified = true;
         this.bucket.unlock();
+        this.streams = (data.streams) ? data.streams.filter((x) => x.type !== MediaStreamTypes.AUDIO) : [];
         this.transportConnect(data);
+        if (this.videoEnabled && this.receiveEnabled) {
+          // the server only forwards the video we ask for
+          this.sendMediaSinkWants({any: 100});
+        }
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
       }; break;
@@ -421,9 +449,36 @@ export class Socket extends EventSpewer {
         const data: MediaGatewayPackets.ClientConnect = packet.d;
 
         this.connectedUserIds.add(data.user_id);
-        this.ssrcs[MediaSSRCTypes.AUDIO].set(data.audio_ssrc, data.user_id);
-        if (data['video_ssrc'] !== undefined) {
+        if (data.audio_ssrc) {
+          this.ssrcs[MediaSSRCTypes.AUDIO].set(data.audio_ssrc, data.user_id);
+        }
+        // sent again whenever the user's video starts or stops, a video_ssrc of 0 means it stopped
+        for (let [ssrc, userId] of this.ssrcs[MediaSSRCTypes.VIDEO]) {
+          if (userId === data.user_id) {
+            this.ssrcs[MediaSSRCTypes.VIDEO].delete(ssrc);
+            for (let [rtxSSRC, videoSSRC] of this.rtxSSRCs) {
+              if (videoSSRC === ssrc) {
+                this.rtxSSRCs.delete(rtxSSRC);
+              }
+            }
+            if (this.transport) {
+              this.transport.deleteFrameAssembler(ssrc);
+            }
+          }
+        }
+        if (data.video_ssrc) {
           this.ssrcs[MediaSSRCTypes.VIDEO].set(data.video_ssrc, data.user_id);
+        }
+        if (data.streams) {
+          // simulcast layers each have their own ssrc
+          for (let stream of data.streams) {
+            if (stream.ssrc && stream.active !== false) {
+              this.ssrcs[MediaSSRCTypes.VIDEO].set(stream.ssrc, data.user_id);
+              if (stream.rtx_ssrc) {
+                this.rtxSSRCs.set(stream.rtx_ssrc, stream.ssrc);
+              }
+            }
+          }
         }
       }; break;
       case MediaOpCodes.CLIENT_DISCONNECT: {
@@ -434,9 +489,19 @@ export class Socket extends EventSpewer {
         if (audioSSRC !== null) {
           this.ssrcs[MediaSSRCTypes.AUDIO].delete(<number> audioSSRC);
         }
-        const videoSSRC = this.userIdToSSRC(data.user_id, MediaSSRCTypes.VIDEO);
-        if (videoSSRC !== null) {
-          this.ssrcs[MediaSSRCTypes.VIDEO].delete(<number> videoSSRC);
+        // one per simulcast layer
+        for (let [ssrc, userId] of this.ssrcs[MediaSSRCTypes.VIDEO]) {
+          if (userId === data.user_id) {
+            this.ssrcs[MediaSSRCTypes.VIDEO].delete(ssrc);
+            for (let [rtxSSRC, videoSSRC] of this.rtxSSRCs) {
+              if (videoSSRC === ssrc) {
+                this.rtxSSRCs.delete(rtxSSRC);
+              }
+            }
+            if (this.transport) {
+              this.transport.deleteFrameAssembler(ssrc);
+            }
+          }
         }
       }; break;
       case MediaOpCodes.HELLO: {
@@ -864,6 +929,8 @@ export class Socket extends EventSpewer {
       token: this.token,
       user_id: this.userId,
       video: this.videoEnabled,
+      // asks the server to assign ssrcs for one full quality video layer, returned in READY
+      streams: (this.videoEnabled) ? [{type: MediaStreamTypes.VIDEO, rid: '100', quality: 100}] : [],
     }, () => {
       this.setState(SocketStates.IDENTIFYING);
     }, true);
@@ -930,12 +997,44 @@ export class Socket extends EventSpewer {
     }
   }
 
-  sendClientConnect(callback?: Function): void {
+  sendClientConnect(
+    options: {videoActive?: boolean} = {},
+    callback?: Function,
+  ): void {
+    const streams: Array<MediaGatewayPackets.Stream> = [];
+    if (this.videoEnabled) {
+      streams.push({
+        active: !!options.videoActive,
+        quality: 100,
+        rid: '100',
+        rtx_ssrc: this.rtxSSRC,
+        ssrc: this.videoSSRC,
+        type: MediaStreamTypes.VIDEO,
+      });
+    }
     this.send(MediaOpCodes.CLIENT_CONNECT, {
       audio_ssrc: this.audioSSRC,
-      video_ssrc: this.videoSSRC,
-      rtx_ssrc: this.rtxSSRC,
+      video_ssrc: (options.videoActive) ? this.videoSSRC : 0,
+      rtx_ssrc: (options.videoActive) ? this.rtxSSRC : 0,
+      streams,
     }, callback);
+  }
+
+  sendMediaSinkWants(
+    wants: MediaGatewayPackets.MediaSinkWants,
+    callback?: Function,
+  ): void {
+    this.send(MediaOpCodes.MEDIA_SINK_WANTS, wants, callback);
+  }
+
+  /**
+   * Gives the voice server a new list of codecs mid call, it answers with a SESSION_UPDATE if that changes what we send
+   */
+  sendSessionUpdate(
+    options: {codecs: Array<any>},
+    callback?: Function,
+  ): void {
+    this.send(MediaOpCodes.SESSION_UPDATE, {codecs: options.codecs}, callback);
   }
 
   sendSelectProtocol(

@@ -287,7 +287,9 @@ export enum GatewayOpCodes {
   STREAM_PING = 21,
   STREAM_SET_PAUSED = 22,
 
+  // old name, kept so existing code keeps working, `GatewayOpCodes[24]` resolves to the newer name below
   REQUEST_APPLICATION_COMMANDS = 24,
+  REQUEST_GUILD_APPLICATION_COMMANDS = 24,
   EMBEDDED_ACTIVITY_LAUNCH = 25,
   EMBEDDED_ACTIVITY_CLOSE = 26,
   EMBEDDED_ACTIVITY_UPDATE = 27,
@@ -300,6 +302,11 @@ export enum GatewayOpCodes {
   REQUEST_LAST_MESSAGES = 34,
   SEARCH_RECENT_MEMBERS = 35,
   REQUEST_CHANNEL_STATUSES = 36,
+  GUILD_SUBSCRIPTIONS_BULK = 37,
+  GUILD_CHANNELS_RESYNC = 38,
+  REQUEST_CHANNEL_MEMBER_COUNT = 39,
+  QOS_HEARTBEAT = 40,
+  UPDATE_TIME_SPENT_SESSION_ID = 41,
 
   REQUEST_CHANNEL_INFO = 43,
 }
@@ -432,8 +439,33 @@ export enum MediaSSRCTypes {
   VIDEO = 'video',
 }
 
+// mirrors of @snazzah/davey's enums, they're `const enum`s so the module has no runtime objects for them
+export enum DaveMediaTypes {
+  AUDIO = 0,
+  VIDEO = 1,
+}
+
+export enum DaveCodecs {
+  UNKNOWN = 0,
+  OPUS = 1,
+  VP8 = 2,
+  VP9 = 3,
+  H264 = 4,
+  H265 = 5,
+  AV1 = 6,
+}
+
+export enum MediaStreamTypes {
+  AUDIO = 'audio',
+  SCREEN = 'screen',
+  TEST = 'test',
+  VIDEO = 'video',
+}
+
 export enum SocketEvents {
   CLOSE = 'close',
+  FRAME = 'frame',
+  KEYFRAME_REQUEST = 'keyframeRequest',
   KILLED = 'killed',
   LOG = 'log',
   OPEN = 'open',
@@ -444,6 +476,7 @@ export enum SocketEvents {
   STATE = 'state',
   TRANSPORT = 'transport',
   TRANSPORT_READY = 'transportReady',
+  VIDEO_CODEC = 'videoCodec',
   WARN = 'warn',
 }
 
@@ -561,6 +594,23 @@ export enum RTPPayloadTypes {
 export const RTP_PAYLOAD_TYPES = Object.freeze(Object.values(RTPPayloadTypes));
 
 export const RTCP_HEADER_VERSION = 0x80;
+
+// RFC 4585 Section 6.2, feedback message types (FMT) of RTCPPacketTypes.RTPFB
+export enum RTCPTransportFeedbackTypes {
+  NACK = 1,
+  TMMBR = 3,
+  TMMBN = 4,
+  TRANSPORT_CC = 15,
+}
+
+// RFC 4585 Section 6.3, feedback message types (FMT) of RTCPPacketTypes.PSFB
+export enum RTCPPayloadFeedbackTypes {
+  PLI = 1,
+  SLI = 2,
+  RPSI = 3,
+  FIR = 4,
+  AFB = 15,
+}
 
 export enum RTCPPacketTypes {
   SENDER_REPORT = 200,

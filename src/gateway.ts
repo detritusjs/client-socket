@@ -1008,7 +1008,7 @@ export class Socket extends EventSpewer {
       query?: string,
     },
   ): void {
-    this.send(GatewayOpCodes.REQUEST_APPLICATION_COMMANDS, {
+    this.send(GatewayOpCodes.REQUEST_GUILD_APPLICATION_COMMANDS, {
       application_id: options.applicationId,
       guild_id: guildId,
       limit: options.limit,
