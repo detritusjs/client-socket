@@ -81,6 +81,11 @@ export namespace MediaGatewayPackets {
     user_id: string,
   }
 
+  export interface Flags {
+    flags: number,
+    user_id: string,
+  }
+
   export interface Hello {
     heartbeat_interval: number,
     v: number,
@@ -88,6 +93,11 @@ export namespace MediaGatewayPackets {
 
   export interface HeartbeatAck {
     t: number,
+  }
+
+  export interface Platform {
+    platform: number,
+    user_id: string,
   }
 
   export interface Ready {
@@ -106,6 +116,7 @@ export namespace MediaGatewayPackets {
   export interface SelectProtocolAckUDP {
     audio_codec: string,
     dave_protocol_version?: number,
+    keyframe_interval?: number,
     mode: string,
     media_session_id: string,
     secret_key: Array<number>,
@@ -114,6 +125,7 @@ export namespace MediaGatewayPackets {
 
   export interface SelectProtocolAckWebRTC {
     audio_codec: string,
+    keyframe_interval?: number,
     media_session_id: string,
     sdp: string,
     video_codec: string,
@@ -121,6 +133,7 @@ export namespace MediaGatewayPackets {
 
   export interface SessionUpdate {
     audio_codec?: string,
+    keyframe_interval?: number,
     media_session_id: string,
     video_codec?: string,
     video_quality_changes?: Array<{
@@ -130,6 +143,11 @@ export namespace MediaGatewayPackets {
     }>,
   }
 
+  export interface VoiceBackendVersion {
+    rtc_worker: string,
+    voice: string,
+  }
+
   export interface Speaking {
     speaking: number,
     ssrc: number,
@@ -137,9 +155,11 @@ export namespace MediaGatewayPackets {
   }
 
   // `any` applies to every ssrc not listed, values are 0-100 (0 asks the server to stop forwarding that ssrc)
+  // `pixelCounts` is the size (width * height) we will show each wanted video ssrc at, the server uses it to pick a layer
   export interface MediaSinkWants {
     any?: number,
-    [ssrc: string]: number | undefined,
+    pixelCounts?: {[ssrc: string]: number},
+    [ssrc: string]: number | {[ssrc: string]: number} | undefined,
   }
 
   export interface DavePrepareTransition {

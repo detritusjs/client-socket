@@ -28,6 +28,14 @@ import RTPCrypto from './mediapackets/rtpcrypto';
 import { MediaGatewayPackets } from './types';
 
 
+export interface VideoStreamSettings {
+  // bits per second
+  maxBitrate?: number,
+  maxFramerate?: number,
+  // `type` is `fixed` unless given
+  maxResolution?: {height: number, type?: string, width: number},
+}
+
 export interface SocketOptions {
   channelId: string,
   forceMode?: MediaEncryptionModes | string,
@@ -47,6 +55,13 @@ const defaultOptions = {
 
 // how long discord gets to send a new voice server after we ask for one
 const NEW_SERVER_TIMEOUT = 15 * 1000;
+
+// how long wants changes are collected before they are sent
+const MEDIA_SINK_WANTS_DELAY = 100;
+
+function clampWants(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value) || 0));
+}
 
 export class Socket extends EventSpewer {
   readonly state: SocketStates = SocketStates.CLOSED;
@@ -73,8 +88,12 @@ export class Socket extends EventSpewer {
   endpoint: null | string = null;
   forceMode: MediaEncryptionModes | null = null;
   gateway: GatewaySocket;
+  // what we ask the server to forward from users with no entry in `userWants`, 0 to 100
+  defaultWants: number = 100;
   identified: boolean = false;
   ipDiscoveryFailures: number = 0;
+  // how often the server wants a video keyframe from us, as it sent it. null until it does
+  keyframeInterval: number | null = null;
   killed: boolean = false;
   // waiting on the voice server discord gives us after the last one stopped answering, see `requestNewServer()`
   newServerTimeout = new Timers.Timeout();
@@ -83,6 +102,12 @@ export class Socket extends EventSpewer {
   ready: boolean = false;
   receiveEnabled: boolean = false;
   reconnects: number = 0;
+  // what the receivers of our video last asked for, keyed by our own stream ssrcs. null until the server sends it
+  remoteMediaSinkWants: MediaGatewayPackets.MediaSinkWants | null = null;
+  // the wants the server last got from us this session, null while it is still on its defaults
+  sentMediaSinkWants: string | null = null;
+  // collects wants changes made right after each other into one packet, see `scheduleMediaSinkWants()`
+  mediaSinkWantsTimeout = new Timers.Timeout();
   // whether we asked discord for a new voice server since we last connected to one
   requestedNewServer: boolean = false;
   // our voice state as discord last sent it, sent again as is when asking for a new voice server
@@ -92,6 +117,8 @@ export class Socket extends EventSpewer {
   // last sequence number received from the server, sent back as `seq_ack`
   sequence: number = -1;
   serverId: string;
+  // the voice gateway version the server said it speaks in HELLO, newer opcodes depend on it
+  serverVersion: number = 0;
   socket: BaseSocket | null = null;
   ssrcs = {
     [MediaSSRCTypes.AUDIO]: new Map<number, string>(),
@@ -101,10 +128,18 @@ export class Socket extends EventSpewer {
   rtxSSRCs = new Map<number, number>();
   // our own video streams, as assigned by the server in READY
   streams: Array<MediaGatewayPackets.Stream> = [];
+  // other users' video streams (one per simulcast layer) as they last announced them, with their bitrate/framerate/resolution
+  userStreams = new Map<string, Array<MediaGatewayPackets.Stream>>();
+  // what we last said about our own video in `sendClientConnect`
+  videoStreamSettings: VideoStreamSettings = {};
   transport: MediaUDPSocket | null = null;
   token: null | string = null;
   userId: string;
+  // per user override of `defaultWants`, 0 stops the server from forwarding that user to us
+  userWants = new Map<string, number>();
   videoEnabled: boolean;
+  // versions of the voice server we are connected to, asked for after READY
+  voiceBackendVersion: {rtcWorker: string, voice: string} | null = null;
 
   constructor(
     gateway: GatewaySocket,
@@ -312,6 +347,7 @@ export class Socket extends EventSpewer {
     code?: number,
   ): void {
     Object.defineProperty(this, 'ready', {value: false});
+    this.mediaSinkWantsTimeout.stop();
     this.bucket.clear();
     this.bucket.lock();
 
@@ -338,6 +374,11 @@ export class Socket extends EventSpewer {
       this.ssrcs[MediaSSRCTypes.AUDIO].clear();
       this.ssrcs[MediaSSRCTypes.VIDEO].clear();
       this.rtxSSRCs.clear();
+      this.userStreams.clear();
+      this.remoteMediaSinkWants = null;
+      this.sentMediaSinkWants = null;
+      this.keyframeInterval = null;
+      this.voiceBackendVersion = null;
       this.destroyDave();
     }
 
@@ -432,9 +473,11 @@ export class Socket extends EventSpewer {
         this.bucket.unlock();
         this.streams = (data.streams) ? data.streams.filter((x) => x.type !== MediaStreamTypes.AUDIO) : [];
         this.transportConnect(data);
-        if (this.videoEnabled && this.receiveEnabled) {
-          // the server only forwards the video we ask for
-          this.sendMediaSinkWants({any: 100});
+        this.sentMediaSinkWants = null;
+        this.syncMediaSinkWants();
+        if (6 <= this.serverVersion) {
+          // answered with the server's versions
+          this.send(MediaOpCodes.VOICE_BACKEND_VERSION, {});
         }
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
@@ -444,6 +487,8 @@ export class Socket extends EventSpewer {
         this.requestedNewServer = false;
         Object.defineProperty(this, 'ready', {value: true});
         this.bucket.unlock();
+        // sent again in case the server did not keep our wants across the resume
+        this.syncMediaSinkWants(true);
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
         // a resume keeps the udp transport and its key and gets no new session description, so this is the only
@@ -483,6 +528,11 @@ export class Socket extends EventSpewer {
         if (data.video_ssrc) {
           this.ssrcs[MediaSSRCTypes.VIDEO].set(data.video_ssrc, data.user_id);
         }
+        if (data.streams && data.streams.length) {
+          this.userStreams.set(data.user_id, data.streams);
+        } else {
+          this.userStreams.delete(data.user_id);
+        }
         if (data.streams) {
           // simulcast layers each have their own ssrc
           for (let stream of data.streams) {
@@ -494,11 +544,13 @@ export class Socket extends EventSpewer {
             }
           }
         }
+        this.scheduleMediaSinkWants();
       }; break;
       case MediaOpCodes.CLIENT_DISCONNECT: {
         const data: MediaGatewayPackets.ClientDisconnect = packet.d;
 
         this.connectedUserIds.delete(data.user_id);
+        this.userStreams.delete(data.user_id);
         const audioSSRC = this.userIdToSSRC(data.user_id, MediaSSRCTypes.AUDIO);
         if (audioSSRC !== null) {
           this.ssrcs[MediaSSRCTypes.AUDIO].delete(<number> audioSSRC);
@@ -517,9 +569,11 @@ export class Socket extends EventSpewer {
             }
           }
         }
+        this.scheduleMediaSinkWants();
       }; break;
       case MediaOpCodes.HELLO: {
         const data: MediaGatewayPackets.Hello = packet.d;
+        this.serverVersion = (data && data.v) || 3;
         this.setHeartbeat(data);
       }; break;
       case MediaOpCodes.HEARTBEAT_ACK: {
@@ -542,6 +596,7 @@ export class Socket extends EventSpewer {
           const {
             audio_codec: audioCodec,
             dave_protocol_version: daveProtocolVersion,
+            keyframe_interval: keyframeInterval,
             mode,
             media_session_id: mediaSessionId,
             secret_key: secretKey,
@@ -562,6 +617,9 @@ export class Socket extends EventSpewer {
           }
           if (this.killed) {
             return;
+          }
+          if (keyframeInterval) {
+            this.keyframeInterval = keyframeInterval;
           }
 
           try {
@@ -586,11 +644,15 @@ export class Socket extends EventSpewer {
       case MediaOpCodes.SESSION_UPDATE: {
         const {
           audio_codec: audioCodec,
+          keyframe_interval: keyframeInterval,
           media_session_id: mediaSessionId,
           video_codec: videoCodec,
           video_quality_changes: videoQualityChanges,
         }: MediaGatewayPackets.SessionUpdate = packet.d;
 
+        if (keyframeInterval) {
+          this.keyframeInterval = keyframeInterval;
+        }
         if (!this.transport) {
           this.emit(SocketEvents.WARN, new Error('Received a Session Update without a transport'));
           return;
@@ -601,17 +663,41 @@ export class Socket extends EventSpewer {
           .setTransportId(mediaSessionId);
 
         if (videoQualityChanges) {
-          videoQualityChanges.forEach((change) => {
-
-          });
+          // the quality we now get of someone's video changed
+          for (let change of videoQualityChanges) {
+            this.emit(SocketEvents.VIDEO_QUALITY, {quality: change.quality, ssrc: change.ssrc, userId: change.user_id});
+          }
         }
       }; break;
       case MediaOpCodes.SPEAKING: {
         const data: MediaGatewayPackets.Speaking = packet.d;
         this.ssrcs[MediaSSRCTypes.AUDIO].set(data.ssrc, data.user_id);
+        // a user's wants can only be sent once we know their ssrc
+        this.scheduleMediaSinkWants();
       }; break;
       case MediaOpCodes.MEDIA_SINK_WANTS: {
         const data: MediaGatewayPackets.MediaSinkWants = packet.d;
+        this.remoteMediaSinkWants = data;
+        this.emit(SocketEvents.MEDIA_SINK_WANTS, data);
+      }; break;
+      case MediaOpCodes.VOICE_BACKEND_VERSION: {
+        const data: MediaGatewayPackets.VoiceBackendVersion = packet.d;
+        if (data && data.voice != null && data.rtc_worker != null) {
+          this.voiceBackendVersion = {rtcWorker: data.rtc_worker, voice: data.voice};
+          this.emit(SocketEvents.VOICE_BACKEND_VERSION, this.voiceBackendVersion);
+        }
+      }; break;
+      case MediaOpCodes.FLAGS: {
+        const data: MediaGatewayPackets.Flags = packet.d;
+        if (data && data.flags != null && data.user_id != null) {
+          this.emit(SocketEvents.FLAGS, {flags: data.flags, userId: data.user_id});
+        }
+      }; break;
+      case MediaOpCodes.PLATFORM: {
+        const data: MediaGatewayPackets.Platform = packet.d;
+        if (data && data.platform != null && data.user_id != null) {
+          this.emit(SocketEvents.PLATFORM, {platform: data.platform, userId: data.user_id});
+        }
       }; break;
       case MediaOpCodes.DAVE_PREPARE_TRANSITION: {
         const data: MediaGatewayPackets.DavePrepareTransition = packet.d;
@@ -961,6 +1047,7 @@ export class Socket extends EventSpewer {
     }
 
     this.send(MediaOpCodes.IDENTIFY, {
+      channel_id: this.channelId,
       max_dave_protocol_version: DaveSession.maxProtocolVersion,
       server_id: this.serverId,
       session_id: this.sessionId,
@@ -976,6 +1063,7 @@ export class Socket extends EventSpewer {
 
   resume(): void {
     this.send(MediaOpCodes.RESUME, {
+      channel_id: this.channelId,
       seq_ack: this.sequence,
       server_id: this.serverId,
       session_id: this.sessionId,
@@ -1035,14 +1123,36 @@ export class Socket extends EventSpewer {
     }
   }
 
+  /**
+   * Tells the voice server (and through it everyone in the call) our ssrcs and if we're sending video
+   * The bitrate/framerate/resolution describe that video, they're kept for the next call so only `videoActive` is needed after
+   */
   sendClientConnect(
-    options: {videoActive?: boolean} = {},
+    options: {videoActive?: boolean} & VideoStreamSettings = {},
     callback?: Function,
   ): void {
+    if (options.maxBitrate !== undefined) {
+      this.videoStreamSettings.maxBitrate = options.maxBitrate;
+    }
+    if (options.maxFramerate !== undefined) {
+      this.videoStreamSettings.maxFramerate = options.maxFramerate;
+    }
+    if (options.maxResolution !== undefined) {
+      this.videoStreamSettings.maxResolution = options.maxResolution;
+    }
+
     const streams: Array<MediaGatewayPackets.Stream> = [];
     if (this.videoEnabled) {
+      const {maxBitrate, maxFramerate, maxResolution} = this.videoStreamSettings;
       streams.push({
         active: !!options.videoActive,
+        max_bitrate: maxBitrate,
+        max_framerate: maxFramerate,
+        max_resolution: (maxResolution) ? {
+          height: maxResolution.height,
+          type: maxResolution.type || 'fixed',
+          width: maxResolution.width,
+        } : undefined,
         quality: 100,
         rid: '100',
         rtx_ssrc: this.rtxSSRC,
@@ -1063,6 +1173,95 @@ export class Socket extends EventSpewer {
     callback?: Function,
   ): void {
     this.send(MediaOpCodes.MEDIA_SINK_WANTS, wants, callback);
+  }
+
+  /**
+   * The wants for our current `receive`, `video`, `defaultWants` and `userWants` settings.
+   * Users are only listed once we know their ssrc, until then `any` applies to them.
+   */
+  buildMediaSinkWants(): MediaGatewayPackets.MediaSinkWants {
+    const any = (this.receiveEnabled) ? this.defaultWants : 0;
+    const wants: MediaGatewayPackets.MediaSinkWants = {any};
+    if (!this.receiveEnabled) {
+      return wants;
+    }
+    for (let [ssrc, userId] of this.ssrcs[MediaSSRCTypes.AUDIO]) {
+      const value = this.userWants.get(userId);
+      if (value !== undefined && value !== any && userId !== this.userId) {
+        wants[ssrc] = value;
+      }
+    }
+    for (let [ssrc, userId] of this.ssrcs[MediaSSRCTypes.VIDEO]) {
+      // `any` covers video too, so with video off every video ssrc has to be turned down by itself
+      const value = (this.videoEnabled) ? this.userWants.get(userId) : 0;
+      if (value !== undefined && value !== any && userId !== this.userId) {
+        wants[ssrc] = value;
+      }
+    }
+    return wants;
+  }
+
+  /**
+   * Sends our wants to the server if they changed since the last time.
+   * Nothing is sent while the server's defaults (all audio, no video) are what we want.
+   */
+  syncMediaSinkWants(force: boolean = false): void {
+    this.mediaSinkWantsTimeout.stop();
+    if (!this.ready) {
+      return;
+    }
+    if (this.sentMediaSinkWants === null) {
+      const custom = !this.receiveEnabled || this.videoEnabled || this.defaultWants !== 100 || !!this.userWants.size;
+      if (!custom) {
+        return;
+      }
+    }
+    const wants = this.buildMediaSinkWants();
+    const key = JSON.stringify(wants);
+    if (!force && key === this.sentMediaSinkWants) {
+      return;
+    }
+    this.sentMediaSinkWants = key;
+    this.sendMediaSinkWants(wants);
+  }
+
+  /**
+   * Like `syncMediaSinkWants()` but waits a moment, so setting the wants of many users at once sends one packet.
+   */
+  scheduleMediaSinkWants(): void {
+    if (!this.ready || this.mediaSinkWantsTimeout.hasStarted) {
+      return;
+    }
+    this.mediaSinkWantsTimeout.start(MEDIA_SINK_WANTS_DELAY, () => this.syncMediaSinkWants());
+  }
+
+  /**
+   * Turns receiving on or off while connected. Off asks the server to stop forwarding everything to us.
+   */
+  setReceive(receive: boolean): void {
+    this.receiveEnabled = !!receive;
+    this.scheduleMediaSinkWants();
+  }
+
+  /**
+   * Sets what we want from users without their own value, 0 to 100.
+   * 0 makes `setUserWants()` an allowlist, only the users given a value are forwarded to us.
+   */
+  setDefaultWants(value: number): void {
+    this.defaultWants = clampWants(value);
+    this.scheduleMediaSinkWants();
+  }
+
+  /**
+   * Sets what we want from one user, 0 to 100. 0 stops the server from forwarding them to us, `null` removes the value.
+   */
+  setUserWants(userId: string, value: number | null): void {
+    if (value === null) {
+      this.userWants.delete(userId);
+    } else {
+      this.userWants.set(userId, clampWants(value));
+    }
+    this.scheduleMediaSinkWants();
   }
 
   /**
@@ -1152,14 +1351,19 @@ export class Socket extends EventSpewer {
 
   on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'close', listener: (payload: {code: number, reason: string}) => any): this;
+  on(event: 'flags', listener: (payload: {flags: number, userId: string}) => any): this;
   on(event: 'killed', listener: (payload: {error?: Error}) => any): this;
+  on(event: 'mediaSinkWants', listener: (wants: MediaGatewayPackets.MediaSinkWants) => any): this;
   on(event: 'open', listener: (target: BaseSocket) => any): this;
   on(event: 'packet', listener: (packet: MediaGatewayPackets.Packet) => any): this;
+  on(event: 'platform', listener: (payload: {platform: number, userId: string}) => any): this;
   on(event: 'ready', listener: () => any): this;
   on(event: 'socket', listener: (socket: BaseSocket) => any): this;
   on(event: 'state', listener: ({state}: {state: SocketStates}) => any): this;
   on(event: 'transport', listener: (transport: MediaUDPSocket) => any): this;
   on(event: 'transportReady', listener: (transport: MediaUDPSocket) => any): this;
+  on(event: 'videoQuality', listener: (payload: {quality: string, ssrc: number, userId: string}) => any): this;
+  on(event: 'voiceBackendVersion', listener: (payload: {rtcWorker: string, voice: string}) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
   on(event: string | symbol, listener: (...args: any[]) => void): this {
     super.on(event, listener);

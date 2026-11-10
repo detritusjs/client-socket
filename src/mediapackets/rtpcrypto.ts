@@ -2,6 +2,8 @@ import * as crypto from 'crypto';
 
 import { CryptoModules, MediaEncryptionModes } from '../constants';
 
+import { hchacha20, HCHACHA20_NONCE_LENGTH, HCHACHA20_OUTPUT_LENGTH } from './hchacha20';
+
 const PCrypto: {
   available: {[key: string]: any},
   modules: Array<CryptoModules>,
@@ -14,7 +16,7 @@ const PCrypto: {
   ],
   using: null,
 };
-// order in preference, only needed for `aead_xchacha20_poly1305_rtpsize`
+// order in preference, `aead_xchacha20_poly1305_rtpsize` uses one of these when installed and node's own chacha20 otherwise
 
 (async () => {
   for (let name of PCrypto.modules) {
@@ -50,6 +52,24 @@ const NonceBuffers: {[key: string]: Buffer} = {
   [MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE]: Buffer.alloc(NonceLengths[MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE]),
 };
 
+// node has chacha20-poly1305 but not the xchacha20 variant discord uses, xchacha20 is chacha20 with a key derived per nonce
+const CHACHA20_POLY1305 = 'chacha20-poly1305';
+const CHACHA20_NONCE_LENGTH = 12;
+const HAS_CHACHA20_POLY1305 = crypto.getCiphers().includes(CHACHA20_POLY1305);
+
+// scratch buffers like the nonces above, node copies the key and nonce when it creates the cipher
+const XChaChaKey = Buffer.alloc(HCHACHA20_OUTPUT_LENGTH);
+const XChaChaNonce = Buffer.alloc(CHACHA20_NONCE_LENGTH);
+
+/**
+ * Fills `XChaChaKey` and `XChaChaNonce` with what regular chacha20-poly1305 needs for a 24 byte xchacha20 nonce:
+ * the key from the nonce's first 16 bytes, and 4 zero bytes followed by its last 8 bytes
+ */
+function prepareXChaCha(key: Uint8Array, fullNonce: Buffer): void {
+  hchacha20(key, fullNonce, XChaChaKey);
+  fullNonce.copy(XChaChaNonce, 4, HCHACHA20_NONCE_LENGTH);
+}
+
 function createNonce(mode: string, nonce: Buffer): Buffer {
   const buffer = NonceBuffers[mode];
   if (!buffer) {
@@ -73,7 +93,7 @@ export default {
         return crypto.getCiphers().includes('aes-256-gcm');
       };
       case MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE: {
-        return !!PCrypto.using;
+        return !!PCrypto.using || HAS_CHACHA20_POLY1305;
       };
     }
     return false;
@@ -108,6 +128,12 @@ export default {
             const packet: Uint8Array = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(data, header, null, fullNonce, key);
             return Buffer.from(packet);
           };
+        }
+        if (HAS_CHACHA20_POLY1305) {
+          prepareXChaCha(key, fullNonce);
+          const cipher = crypto.createCipheriv(CHACHA20_POLY1305, XChaChaKey, XChaChaNonce, {authTagLength: AEAD_TAG_LENGTH});
+          cipher.setAAD(header);
+          return Buffer.concat([cipher.update(data), cipher.final(), cipher.getAuthTag()]);
         }
         throw new Error(`For ${mode}, please install one of: ${JSON.stringify(PCrypto.modules)}`);
       };
@@ -203,6 +229,16 @@ export default {
               const packet: Uint8Array = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, data, header, fullNonce, key);
               return Buffer.from(packet);
             };
+          }
+          if (HAS_CHACHA20_POLY1305) {
+            prepareXChaCha(key, fullNonce);
+            const decipher = crypto.createDecipheriv(CHACHA20_POLY1305, XChaChaKey, XChaChaNonce, {authTagLength: AEAD_TAG_LENGTH});
+            decipher.setAAD(header);
+            decipher.setAuthTag(data.subarray(data.length - AEAD_TAG_LENGTH));
+            const decrypted = decipher.update(data.subarray(0, data.length - AEAD_TAG_LENGTH));
+            // throws if the auth tag doesn't match, a stream cipher never has anything left over in it
+            decipher.final();
+            return decrypted;
           }
         }; break;
       }
