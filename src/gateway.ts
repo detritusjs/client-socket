@@ -15,6 +15,7 @@ import {
   CompressTypes,
   EncodingTypes,
   GatewayDispatchEvents,
+  GatewayCapabilities,
   GatewayIntents,
   GatewayOpCodes,
   GatewayPresenceStatuses,
@@ -73,6 +74,8 @@ const defaultPresence = Object.freeze({
 
 export interface SocketOptions {
   autoReconnect?: boolean,
+  // `GatewayCapabilities` names or bits, e.g. `['CHANNEL_OBFUSCATION']` or `1 << 15`
+  capabilities?: Array<number> | Array<string> | string | number,
   compress?: boolean | string,
   disabledEvents?: Array<string>,
   encoding?: string,
@@ -113,6 +116,7 @@ export class Socket extends EventSpewer {
   compress: CompressTypes;
   disabledEvents: Array<string>;
   discordTrace: Array<any> = [];
+  capabilities: number = 0;
   decompressor: Decompressor | null;
   encoding: EncodingTypes;
   guildSubscriptions: boolean;
@@ -214,6 +218,25 @@ export class Socket extends EventSpewer {
       };
     }
 
+    if (options.capabilities !== undefined) {
+      this.capabilities = 0;
+      const capabilities = (Array.isArray(options.capabilities)) ? options.capabilities : [options.capabilities];
+      for (let capability of capabilities) {
+        if (typeof(capability) === 'string') {
+          capability = capability.toUpperCase();
+          if (capability in GatewayCapabilities) {
+            this.capabilities |= (GatewayCapabilities as any)[capability];
+          } else {
+            throw new Error(`Invalid capability received: ${capability}`);
+          }
+        } else if (typeof(capability) === 'number') {
+          this.capabilities |= capability;
+        } else {
+          throw new Error(`Invalid capability received: ${capability}`);
+        }
+      }
+    }
+
     if (options.intents !== undefined) {
       this.intents = 0;
       if (options.intents === 'ALL') {
@@ -299,6 +322,7 @@ export class Socket extends EventSpewer {
           assets: undefined,
           buttons: activity.buttons,
           details: activity.details,
+          details_url: activity.detailsUrl,
           emoji: undefined,
           flags: activity.flags,
           metadata: activity.metadata,
@@ -308,6 +332,8 @@ export class Socket extends EventSpewer {
           secrets: undefined,
           session_id: activity.sessionId,
           state: activity.state,
+          state_url: activity.stateUrl,
+          status_display_type: activity.statusDisplayType,
           sync_id: activity.syncId,
           timestamps: undefined,
           type: activity.type,
@@ -318,8 +344,10 @@ export class Socket extends EventSpewer {
           raw.assets = {
             large_image: activity.assets.largeImage,
             large_text: activity.assets.largeText,
+            large_url: activity.assets.largeUrl,
             small_image: activity.assets.smallImage,
             small_text: activity.assets.smallText,
+            small_url: activity.assets.smallUrl,
           };
         }
         if (activity.emoji) {
@@ -362,6 +390,10 @@ export class Socket extends EventSpewer {
       properties: this.identifyProperties,
       token: this.token,
     };
+    // only sent when set, so the default identify payload stays the same
+    if (this.capabilities) {
+      data.capabilities = this.capabilities;
+    }
     if (DEFAULT_SHARD_COUNT < this.shardCount) {
       data.shard = [this.shardId, this.shardCount];
     }
@@ -1209,6 +1241,7 @@ export class Socket extends EventSpewer {
 }
 
 export interface IdentifyData {
+  capabilities?: number,
   compress?: boolean,
   guild_subscriptions?: boolean,
   intents?: number,
@@ -1242,11 +1275,14 @@ export interface RawPresenceActivity {
   assets?: {
     large_image?: string,
     large_text?: string,
+    large_url?: string,
     small_image?: string,
     small_text?: string,
+    small_url?: string,
   },
   buttons?: Array<string>,
   details?: string,
+  details_url?: string,
   emoji?: {
     animated: boolean,
     id: null | string,
@@ -1269,6 +1305,8 @@ export interface RawPresenceActivity {
   },
   session_id?: string,
   state?: string,
+  state_url?: string,
+  status_display_type?: number,
   sync_id?: string,
   timestamps?: {
     end?: number,
@@ -1297,11 +1335,14 @@ export interface PresenceActivityOptions {
   assets?: {
     largeImage?: string,
     largeText?: string,
+    largeUrl?: string,
     smallImage?: string,
     smallText?: string,
+    smallUrl?: string,
   },
   buttons?: Array<string>,
   details?: string,
+  detailsUrl?: string,
   emoji?: {
     animated: boolean,
     id: null | string,
@@ -1322,6 +1363,9 @@ export interface PresenceActivityOptions {
   },
   sessionId?: string,
   state?: string,
+  stateUrl?: string,
+  // 0 name, 1 state, 2 details
+  statusDisplayType?: number,
   syncId?: string,
   timestamps?: {
     end?: number,
