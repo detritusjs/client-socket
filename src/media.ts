@@ -59,6 +59,9 @@ const NEW_SERVER_TIMEOUT = 15 * 1000;
 // how long wants changes are collected before they are sent
 const MEDIA_SINK_WANTS_DELAY = 100;
 
+// discord's client only resumes if its last heartbeat ack is this recent, an older session gets identified again
+const RESUME_MAX_AGE = 60 * 1000;
+
 function clampWants(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value) || 0));
 }
@@ -92,6 +95,8 @@ export class Socket extends EventSpewer {
   defaultWants: number = 100;
   identified: boolean = false;
   ipDiscoveryFailures: number = 0;
+  // kept across disconnects (unlike `_heartbeat.lastAck`) to decide if the session is still resumable
+  lastHeartbeatAckAt: null | number = null;
   // how often the server wants a video keyframe from us, as it sent it. null until it does
   keyframeInterval: number | null = null;
   killed: boolean = false;
@@ -364,22 +369,14 @@ export class Socket extends EventSpewer {
       case SocketMediaCloseCodes.DAVE_PROTOCOL_REQUIRED:
       case SocketMediaCloseCodes.BAD_REQUEST:
       case SocketMediaCloseCodes.RATE_LIMITED:
-      case SocketMediaCloseCodes.CALL_TERMINATED: {
+      case SocketMediaCloseCodes.CALL_TERMINATED:
+      // the session died with the server, discord's client identifies again instead of resuming
+      case SocketMediaCloseCodes.VOICE_SERVER_CRASHED: {
         this.identified = false;
       }; break;
     }
     if (!this.identified) {
-      this.sequence = -1;
-      this.connectedUserIds.clear();
-      this.ssrcs[MediaSSRCTypes.AUDIO].clear();
-      this.ssrcs[MediaSSRCTypes.VIDEO].clear();
-      this.rtxSSRCs.clear();
-      this.userStreams.clear();
-      this.remoteMediaSinkWants = null;
-      this.sentMediaSinkWants = null;
-      this.keyframeInterval = null;
-      this.voiceBackendVersion = null;
-      this.destroyDave();
+      this.resetSession();
     }
 
     this._heartbeat.interval.stop();
@@ -388,6 +385,24 @@ export class Socket extends EventSpewer {
     this._heartbeat.lastSent = null;
     this._heartbeat.intervalTime = null;
     this._heartbeat.nonce = null;
+  }
+
+  /**
+   * Forgets everything tied to the voice session, the next connection identifies instead of resuming
+   */
+  resetSession(): void {
+    this.identified = false;
+    this.sequence = -1;
+    this.connectedUserIds.clear();
+    this.ssrcs[MediaSSRCTypes.AUDIO].clear();
+    this.ssrcs[MediaSSRCTypes.VIDEO].clear();
+    this.rtxSSRCs.clear();
+    this.userStreams.clear();
+    this.remoteMediaSinkWants = null;
+    this.sentMediaSinkWants = null;
+    this.keyframeInterval = null;
+    this.voiceBackendVersion = null;
+    this.destroyDave();
   }
 
   connect(
@@ -586,6 +601,11 @@ export class Socket extends EventSpewer {
         }
         this._heartbeat.ack = true;
         this._heartbeat.lastAck = Date.now();
+        this.lastHeartbeatAckAt = this._heartbeat.lastAck;
+      }; break;
+      case MediaOpCodes.HEARTBEAT: {
+        // the server asking for one right away
+        this.heartbeat();
       }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
         if (!this.transport) {
@@ -782,6 +802,12 @@ export class Socket extends EventSpewer {
     dave.on('invalidateTransition', (transitionId: number) => {
       this.send(MediaOpCodes.DAVE_MLS_INVALID_COMMIT_WELCOME, {transition_id: transitionId});
     });
+    dave.on('invalidTransitionsExceeded', (count: number) => {
+      this.emit(SocketEvents.WARN, new Error(`${count} invalid DAVE commits/welcomes in a row, reconnecting with a new session`));
+      this.resetSession();
+      this.disconnect(SocketInternalCloseCodes.DAVE_INVALID_TRANSITIONS);
+      this.connect();
+    });
     dave.on('keyPackage', (keyPackage: Buffer) => {
       this.sendBinary(MediaOpCodes.DAVE_MLS_KEY_PACKAGE, keyPackage);
     });
@@ -940,6 +966,13 @@ export class Socket extends EventSpewer {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
       this.setState(SocketStates.OPEN);
+      if (this.identified) {
+        const lastAckAt = this.lastHeartbeatAckAt;
+        if (lastAckAt === null || RESUME_MAX_AGE < Date.now() - lastAckAt) {
+          // too long since the server last answered, it has likely dropped the session and would close with 4006
+          this.resetSession();
+        }
+      }
       if (this.identified && this.transport) {
         this.resume();
       } else {
@@ -1304,6 +1337,8 @@ export class Socket extends EventSpewer {
   sendSpeaking(
     options: {
       delay?: number,
+      // discord's client shows no speaking indicator for a speaking update with this flag
+      hidden?: boolean,
       priority?: boolean,
       ssrc?: number,
       soundshare?: boolean,
@@ -1329,6 +1364,9 @@ export class Socket extends EventSpewer {
     }
     if (options.priority) {
       data.speaking |= MediaSpeakingFlags.PRIORITY;
+    }
+    if (options.hidden) {
+      data.speaking |= MediaSpeakingFlags.HIDDEN;
     }
     this.send(MediaOpCodes.SPEAKING, data, callback);
   }

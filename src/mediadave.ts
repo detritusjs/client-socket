@@ -33,6 +33,8 @@ export class DaveSession extends EventSpewer {
   channelId: string;
   consecutiveFailures: number = 0;
   downgraded: boolean = false;
+  // invalid commits/welcomes in a row, reset by any transition that goes through
+  invalidTransitions: number = 0;
   lastTransitionId: null | number = null;
   pendingTransition: null | {protocolVersion: number, transitionId: number} = null;
   protocolVersion: number;
@@ -131,6 +133,7 @@ export class DaveSession extends EventSpewer {
         }
       }
       transitioned = true;
+      this.invalidTransitions = 0;
       this.reinitializing = false;
       this.lastTransitionId = transitionId;
     }
@@ -146,13 +149,20 @@ export class DaveSession extends EventSpewer {
     }
   }
 
+  /**
+   * Every invalid commit/welcome gets reported and a new key package sent, even mid reinit, otherwise a bad welcome
+   * after a reinit leaves us stuck. Decryption failures only call this when not already reinitializing
+   */
   recoverFromInvalidTransition(transitionId: number): void {
-    if (this.reinitializing) {
-      return;
-    }
     this.reinitializing = true;
     this.consecutiveFailures = 0;
+    this.invalidTransitions++;
     this.emit('invalidateTransition', transitionId);
+    if (MediaDaveTransition.MAX_INVALID_TRANSITIONS <= this.invalidTransitions) {
+      // reinitializing again won't help, the owner reconnects with a fresh session instead
+      this.emit('invalidTransitionsExceeded', this.invalidTransitions);
+      return;
+    }
     this.reinit();
   }
 
@@ -191,6 +201,7 @@ export class DaveSession extends EventSpewer {
     try {
       process(payload.subarray(2));
       if (transitionId === 0) {
+        this.invalidTransitions = 0;
         this.reinitializing = false;
         this.lastTransitionId = transitionId;
       } else {

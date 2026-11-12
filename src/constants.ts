@@ -417,6 +417,8 @@ export const MediaDaveTransition = Object.freeze({
   EXPIRY_PENDING_DOWNGRADE: 24,
   // consecutive decryption failures before we try to recover
   FAILURE_TOLERANCE: 36,
+  // consecutive invalid commits/welcomes before we give up on the session and reconnect, like discord's client
+  MAX_INVALID_TRANSITIONS: 5,
 });
 
 export enum MediaDaveProposalsOperationTypes {
@@ -585,6 +587,7 @@ export enum SocketInternalCloseCodes {
   OTHER_SOCKET_MESSAGE = 4904,
   OTHER_SOCKET_OPEN = 4905,
   INVALID_SESSION_NON_RESUMABLE = 4906,
+  DAVE_INVALID_TRANSITIONS = 4907,
 }
 
 export const SocketInternalCloseReasons = Object.freeze({
@@ -596,6 +599,7 @@ export const SocketInternalCloseReasons = Object.freeze({
   [SocketInternalCloseCodes.OTHER_SOCKET_MESSAGE]: 'Received message from not our current socket',
   [SocketInternalCloseCodes.OTHER_SOCKET_OPEN]: 'Received open from not our current socket',
   [SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE]: 'Received Invalid Session that is not resumable',
+  [SocketInternalCloseCodes.DAVE_INVALID_TRANSITIONS]: 'Too many invalid DAVE commits/welcomes in a row, reconnecting',
 });
 
 export enum SocketGatewayCloseCodes {
