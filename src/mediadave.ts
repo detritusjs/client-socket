@@ -19,6 +19,22 @@ try {
 
 const SilencePacket = Buffer.from(MediaSilencePacket);
 
+// e2ee frames end with: supplemental data (tag, nonce, unencrypted ranges) | uint8 supplemental size | uint16 0xFAFA
+const DAVE_MAGIC_MARKER = 0xFAFA;
+// the smallest supplemental size libdave accepts: 8 byte tag + the size byte + the marker
+const DAVE_SUPPLEMENTAL_MIN_SIZE = 11;
+
+/**
+ * If the frame carries a DAVE footer, it's e2ee ciphertext and must never be used as is
+ */
+function isDaveFrame(frame: Buffer): boolean {
+  if (frame.length < DAVE_SUPPLEMENTAL_MIN_SIZE || frame.readUInt16BE(frame.length - 2) !== DAVE_MAGIC_MARKER) {
+    return false;
+  }
+  const supplementalSize = frame[frame.length - 3];
+  return DAVE_SUPPLEMENTAL_MIN_SIZE <= supplementalSize && supplementalSize <= frame.length;
+}
+
 
 export interface DaveTransitionResult {
   success: boolean,
@@ -215,9 +231,16 @@ export class DaveSession extends EventSpewer {
     }
   }
 
-  encrypt(packet: Buffer): Buffer {
-    if (this.protocolVersion === 0 || !this.ready || packet.equals(SilencePacket)) {
+  /**
+   * Returns null if the packet must not be sent, the call is e2ee and we have no keys yet (before the welcome/commit)
+   */
+  encrypt(packet: Buffer): Buffer | null {
+    // silence frames are never e2ee, libdave passes them through as well
+    if (this.protocolVersion === 0 || packet.equals(SilencePacket)) {
       return packet;
+    }
+    if (!this.ready) {
+      return null;
     }
     return this.session.encryptOpus(packet);
   }
@@ -226,12 +249,13 @@ export class DaveSession extends EventSpewer {
    * Returns null if the packet couldn't be decrypted
    */
   decrypt(packet: Buffer, userId: string): Buffer | null {
-    if (packet.equals(SilencePacket) || !this.session) {
+    if (packet.equals(SilencePacket)) {
       return packet;
     }
     const canDecrypt = this.ready && (this.protocolVersion !== 0 || this.session.canPassthrough(userId));
     if (!canDecrypt) {
-      return packet;
+      // ciphertext from someone already in the e2ee group, before we were welcomed into it
+      return (isDaveFrame(packet)) ? null : packet;
     }
     try {
       const data: Buffer = this.session.decrypt(userId, DaveMediaTypes.AUDIO, packet);
@@ -255,10 +279,14 @@ export class DaveSession extends EventSpewer {
   /**
    * Video is encrypted per frame, before it's split into rtp packets (h264 as annex b)
    * The codec matters, DAVE leaves the parts of a frame the sfu and decoders need to read (nal headers, frame tags) as is
+   * Returns null if the frame must not be sent, like `encrypt()`
    */
-  encryptVideo(frame: Buffer, codec: MediaCodecs | string): Buffer {
-    if (this.protocolVersion === 0 || !this.ready) {
+  encryptVideo(frame: Buffer, codec: MediaCodecs | string): Buffer | null {
+    if (this.protocolVersion === 0) {
       return frame;
+    }
+    if (!this.ready) {
+      return null;
     }
     let daveCodec = DaveCodecs.UNKNOWN;
     switch (codec) {
@@ -274,12 +302,9 @@ export class DaveSession extends EventSpewer {
    * Returns null if the frame couldn't be decrypted
    */
   decryptVideo(frame: Buffer, userId: string): Buffer | null {
-    if (!this.session) {
-      return frame;
-    }
     const canDecrypt = this.ready && (this.protocolVersion !== 0 || this.session.canPassthrough(userId));
     if (!canDecrypt) {
-      return frame;
+      return (isDaveFrame(frame)) ? null : frame;
     }
     try {
       return this.session.decrypt(userId, DaveMediaTypes.VIDEO, frame);

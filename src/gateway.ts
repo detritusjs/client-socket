@@ -28,6 +28,8 @@ import {
   SocketInternalCloseReasons,
   SocketStates,
   COMPRESS_TYPES,
+  DEFAULT_HELLO_TIMEOUT,
+  DEFAULT_RECONNECT_DELAY_MAX,
   DEFAULT_SHARD_COUNT,
   DEFAULT_SHARD_LAUNCH_DELAY,
   DEFAULT_VOICE_TIMEOUT,
@@ -47,9 +49,9 @@ try {
 } catch(e) {}
 
 const IdentifyProperties = Object.freeze({
-  $browser: process.version.replace(/^v/, (process.release.name || 'node') + '/'),
-  $device: `Detritus v${Package.VERSION}`,
-  $os: `${os.type()} ${os.release()}; ${os.arch()}`,
+  browser: process.version.replace(/^v/, (process.release.name || 'node') + '/'),
+  device: `Detritus v${Package.VERSION}`,
+  os: `${os.type()} ${os.release()}; ${os.arch()}`,
 });
 
 const defaultOptions = Object.freeze({
@@ -94,22 +96,27 @@ export interface SocketOptions {
 export class Socket extends EventSpewer {
   readonly state: SocketStates = SocketStates.CLOSED;
 
+  _helloTimeout = new Timers.Timeout();
   _lastSocket: BaseSocket | null = null;
   _packetImmediate: ReturnType<typeof setImmediate> | null = null;
   _packetQueue: Array<any> = [];
   _reconnectTimeout = new Timers.Timeout();
+  // the socket we opened on `resume_gateway_url`, until it sends HELLO
+  _resumeUrlSocket: BaseSocket | null = null;
   _heartbeat: {
     ack: boolean,
     lastAck: null | number,
     lastSent: null | number,
     interval: Timers.Interval,
     intervalTime: null | number,
+    timeout: Timers.Timeout,
   } = {
     ack: false,
     lastAck: null,
     lastSent: null,
     interval: new Timers.Interval(),
     intervalTime: null,
+    timeout: new Timers.Timeout(),
   };
   autoReconnect: boolean;
   bucket: Bucket;
@@ -179,6 +186,14 @@ export class Socket extends EventSpewer {
     }
 
     Object.assign(this.identifyProperties, options.identifyProperties);
+    // discord dropped the `$` prefix, move the old keys over so they replace our defaults instead of being sent alongside them
+    for (let key of ['browser', 'device', 'os']) {
+      const properties = this.identifyProperties as any;
+      if (properties[`$${key}`] !== undefined) {
+        properties[key] = properties[`$${key}`];
+      }
+      delete properties[`$${key}`];
+    }
 
     if (!COMPRESS_TYPES.includes(this.compress)) {
       throw new Error(`Compress type must be of: '${COMPRESS_TYPES.join(', ')}'`);
@@ -239,33 +254,35 @@ export class Socket extends EventSpewer {
 
     if (options.intents !== undefined) {
       this.intents = 0;
-      if (options.intents === 'ALL') {
-        this.intents = GATEWAY_INTENTS_ALL;
-      } else if (options.intents === 'ALL_UNPRIVILEGED') {
-        this.intents = GATEWAY_INTENTS_ALL_UNPRIVILEGED;
-      } else {
-        const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
-        for (let intent of intents) {
-          if (typeof(intent) === 'string') {
-            intent = intent.toUpperCase();
-            if (intent in GatewayIntents) {
-              this.intents |= (GatewayIntents as any)[intent];
-            }
-          } else if (typeof(intent) === 'number') {
-            this.intents |= intent;
+      const intents = (Array.isArray(options.intents)) ? options.intents : [options.intents];
+      for (let intent of intents) {
+        if (typeof(intent) === 'string') {
+          intent = intent.toUpperCase();
+          if (intent === 'ALL') {
+            this.intents |= GATEWAY_INTENTS_ALL;
+          } else if (intent === 'ALL_UNPRIVILEGED') {
+            this.intents |= GATEWAY_INTENTS_ALL_UNPRIVILEGED;
+          } else if (typeof((GatewayIntents as any)[intent]) === 'number') {
+            this.intents |= (GatewayIntents as any)[intent];
           } else {
             throw new Error(`Invalid intent received: ${intent}`);
           }
+        } else if (typeof(intent) === 'number') {
+          this.intents |= intent;
+        } else {
+          throw new Error(`Invalid intent received: ${intent}`);
         }
       }
     }
 
     Object.defineProperties(this, {
       _heartbeat: {enumerable: false, writable: false},
+      _helloTimeout: {enumerable: false, writable: false},
       _lastSocket: {enumerable: false},
       _packetImmediate: {enumerable: false},
       _packetQueue: {enumerable: false, writable: false},
       _reconnectTimeout: {enumerable: false, writable: false},
+      _resumeUrlSocket: {enumerable: false},
       emitPackets: {enumerable: false},
       identifyProperties: {enumerable: false},
       killed: {configurable: true},
@@ -298,7 +315,14 @@ export class Socket extends EventSpewer {
   }
 
   makePresence(options: PresenceOptions = {}): RawPresence {
-    options = this.presence = Object.assign({}, defaultPresence, this.presence, options);
+    const presence: PresenceOptions = Object.assign({}, defaultPresence, this.presence);
+    if (options.activities !== undefined || options.activity !== undefined || options.game !== undefined) {
+      // new activities replace all of the old ones, otherwise an old `activity` would keep being sent alongside new `activities`
+      delete presence.activities;
+      delete presence.activity;
+      delete presence.game;
+    }
+    options = this.presence = Object.assign(presence, options);
 
     const data: RawPresence = {
       activities: [],
@@ -403,6 +427,12 @@ export class Socket extends EventSpewer {
     return data;
   }
 
+  // exponential backoff with some jitter, so a longer outage doesn't burn through `reconnectMax` in seconds
+  getReconnectDelay(): number {
+    const delay = Math.min(this.reconnectDelay * (2 ** this.reconnects), Math.max(this.reconnectDelay, DEFAULT_RECONNECT_DELAY_MAX));
+    return delay + Math.round(Math.random() * delay * 0.1);
+  }
+
   getResumeData(): ResumeData {
     return {
       seq: this.sequence || null,
@@ -412,8 +442,10 @@ export class Socket extends EventSpewer {
   }
 
   cleanup(code?: string | number, reason?: string): void {
-    this.bucket.clear();
+    // heartbeats and identify/resume belong to this connection, regular sends wait for the next READY/RESUMED
+    this.bucket.clearPriority();
     this.bucket.lock();
+    this._helloTimeout.stop();
     if (this.decompressor) {
       this.decompressor.reset();
     }
@@ -426,6 +458,7 @@ export class Socket extends EventSpewer {
         case SocketGatewayCloseCodes.INVALID_SEQUENCE:
         case SocketGatewayCloseCodes.SESSION_TIMEOUT:
         case SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE: {
+          this.bucket.clear();
           this.sequence = 0;
           this.sessionId = null;
           this.resumeGatewayUrl = null;
@@ -443,6 +476,7 @@ export class Socket extends EventSpewer {
     }
 
     this._heartbeat.interval.stop();
+    this._heartbeat.timeout.stop();
     this._heartbeat.ack = false;
     this._heartbeat.lastAck = null;
     this._heartbeat.lastSent = null;
@@ -454,7 +488,8 @@ export class Socket extends EventSpewer {
   ): void {
     if (this.killed) {return;}
     this._reconnectTimeout.stop();
-    if (this.connected) {
+    // even a closing socket still needs its heartbeat, decompressor, and bucket cleaned up
+    if (this.socket) {
       this.disconnect(SocketInternalCloseCodes.RECONNECTING);
     }
 
@@ -494,15 +529,21 @@ export class Socket extends EventSpewer {
       this.socket.on(SocketEventsBase.ERROR, this.onError.bind(this, this.socket));
       this.socket.on(SocketEventsBase.MESSAGE, this.onMessage.bind(this, this.socket));
       this.socket.on(SocketEventsBase.OPEN, this.onOpen.bind(this, this.socket));
+      this._resumeUrlSocket = (isResumeUrl) ? this.socket : null;
     } catch(error) {
       this.socket = null;
+      this._resumeUrlSocket = null;
+      if (isResumeUrl) {
+        // resume on the regular gateway url instead, the session is still good
+        this.resumeGatewayUrl = null;
+      }
       this.emit(SocketEvents.WARN, error);
       if (this.autoReconnect && !this.killed) {
         if (this.reconnectMax <= this.reconnects) {
           this.kill(new Error(`Tried reconnecting ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
-          this._reconnectTimeout.start(this.reconnectDelay, () => {
+          this._reconnectTimeout.start(this.getReconnectDelay(), () => {
             this.reconnects++;
             this.connect((isResumeUrl) ? null : url);
           });
@@ -520,7 +561,7 @@ export class Socket extends EventSpewer {
   ): any {
     try {
       if (data instanceof ArrayBuffer) {
-        data = Buffer.from(new Uint8Array(data));
+        data = Buffer.from(data);
       } else if (Array.isArray(data)) {
         data = Buffer.concat(data);
       }
@@ -583,6 +624,8 @@ export class Socket extends EventSpewer {
       case GatewayOpCodes.HELLO: {
         const data: GatewayPackets.Hello = packet.d;
 
+        this._helloTimeout.stop();
+        this._resumeUrlSocket = null;
         this.setHeartbeat(data);
         if (this.sessionId) {
           this.resume();
@@ -597,7 +640,8 @@ export class Socket extends EventSpewer {
         }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
-        const shouldResume: GatewayPackets.InvalidSession = packet.d;
+        // we can only resume if we have a session to resume
+        const shouldResume = !!(packet.d as GatewayPackets.InvalidSession) && !!this.sessionId;
         if (!shouldResume) {
           this.sequence = 0;
           this.sessionId = null;
@@ -610,7 +654,9 @@ export class Socket extends EventSpewer {
             return;
           }
           if (shouldResume) {
-            this.resume();
+            // resume on a new connection, this one's session was just invalidated
+            this.disconnect(SocketInternalCloseCodes.RECONNECTING);
+            this.connect();
           } else {
             this.disconnect(SocketInternalCloseCodes.INVALID_SESSION_NON_RESUMABLE);
             this.connect();
@@ -764,6 +810,11 @@ export class Socket extends EventSpewer {
     // a stale socket closing late must not schedule a second reconnect
     const isCurrent = (this.socket === target || (!this.socket && this._lastSocket === target));
     this.emit(SocketEvents.CLOSE, {code, reason, stale: !isCurrent});
+    if (this._resumeUrlSocket === target) {
+      // the resume node never said HELLO, keep the session but resume on the regular gateway url next
+      this._resumeUrlSocket = null;
+      this.resumeGatewayUrl = null;
+    }
     if (isCurrent) {
       this.setState(SocketStates.CLOSED);
       this.disconnect(code, reason);
@@ -772,7 +823,7 @@ export class Socket extends EventSpewer {
           this.kill(new Error(`Tried reconnecting ${this.reconnectMax} times.`));
         } else {
           this.emit(SocketEvents.RECONNECTING);
-          this._reconnectTimeout.start(this.reconnectDelay, () => {
+          this._reconnectTimeout.start(this.getReconnectDelay(), () => {
             this.reconnects++;
             this.connect();
           });
@@ -803,7 +854,17 @@ export class Socket extends EventSpewer {
   onOpen(target: BaseSocket) {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
+      // the send limit is per connection
+      this.bucket.reset();
       this.setState(SocketStates.OPEN);
+      // a node that opens but never sends HELLO would otherwise leave us waiting forever
+      this._helloTimeout.start(DEFAULT_HELLO_TIMEOUT, () => {
+        if (this.socket === target) {
+          this.disconnect(SocketInternalCloseCodes.RECONNECTING);
+          // a stalled node won't answer our close frame either, don't wait out ws's close timeout before reconnecting
+          target.terminate();
+        }
+      });
     } else {
       target.close(SocketInternalCloseCodes.OTHER_SOCKET_OPEN);
     }
@@ -883,11 +944,14 @@ export class Socket extends EventSpewer {
     if (data) {
       this._heartbeat.ack = true;
       this._heartbeat.lastAck = Date.now();
-      // sets `ack` to false, so a zombied connection is caught on the first interval
-      this.heartbeat();
-      this._heartbeat.intervalTime = data['heartbeat_interval'];
-      this._heartbeat.interval.start(this._heartbeat.intervalTime, () => {
-        this.heartbeat(true);
+      const intervalTime = this._heartbeat.intervalTime = data['heartbeat_interval'];
+      // discord wants the first heartbeat after `heartbeat_interval * jitter`, so shards don't all heartbeat at once
+      this._heartbeat.timeout.start(Math.round(Math.random() * intervalTime), () => {
+        // sets `ack` to false, so a zombied connection is caught on the first interval
+        this.heartbeat();
+        this._heartbeat.interval.start(intervalTime, () => {
+          this.heartbeat(true);
+        });
       });
       this.discordTrace = data._trace;
     }
@@ -1253,11 +1317,15 @@ export interface IdentifyData {
 }
 
 export interface IdentifyDataProperties {
+  /** @deprecated use `browser` */
   $browser?: string,
+  /** @deprecated use `device` */
   $device?: string,
+  /** @deprecated use `os` */
   $os?: string,
   os?: string,
   browser?: string,
+  device?: string,
   browser_user_agent?: string,
   browser_version?: string,
   client_build_number?: number,

@@ -313,7 +313,8 @@ export class AudioMixer extends EventSpewer {
 
   protected schedule(): void {
     const target = this.startedAt + (this.ticks + 1) * this.format.frameDuration;
-    this.timeout = setTimeout(() => this.tick(), Math.max(target - this.now(), 0));
+    // rounded up, a timer firing a fraction of a millisecond early would find no frame due yet
+    this.timeout = setTimeout(() => this.tick(), Math.max(Math.ceil(target - this.now()), 0));
   }
 
   protected tick(): void {
@@ -321,7 +322,17 @@ export class AudioMixer extends EventSpewer {
     if (!this.running) {
       return;
     }
+    try {
+      this.mix();
+    } finally {
+      // keep going even if a listener threw, unless it stopped us (or restarted us, which already scheduled a tick)
+      if (this.running && !this.timeout) {
+        this.schedule();
+      }
+    }
+  }
 
+  protected mix(): void {
     let due = Math.floor((this.now() - this.startedAt) / this.format.frameDuration) - this.ticks;
     if (MAX_CATCH_UP_FRAMES < due) {
       // the event loop stalled, drop the missed audio instead of emitting a burst
@@ -342,6 +353,10 @@ export class AudioMixer extends EventSpewer {
       this.ticks++;
       if (frame) {
         this.emit('data', frame);
+        if (!this.running || this.timeout) {
+          // a listener stopped (or restarted) the mixer
+          return;
+        }
       }
     }
 
@@ -353,8 +368,6 @@ export class AudioMixer extends EventSpewer {
         }
       }
     }
-
-    this.schedule();
   }
 
   protected read(): Buffer | null {

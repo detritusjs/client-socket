@@ -43,6 +43,8 @@ export class ZlibDecompressor extends EventSpewer {
   chunkSize: number;
   closed: boolean = false;
   flushing: boolean = false;
+  // made once per inflate instead of once per payload
+  flushCallback: ((error?: any) => void) | null = null;
   inflate: any = null;
   suffix: Buffer;
 
@@ -76,6 +78,7 @@ export class ZlibDecompressor extends EventSpewer {
       }
     }
     this.inflate = null;
+    this.flushCallback = null;
   }
 
   feed(chunk: Buffer): void {
@@ -100,6 +103,14 @@ export class ZlibDecompressor extends EventSpewer {
         });
         this.inflate.on('data', this.onData.bind(this));
         this.inflate.on('error', this.onError.bind(this));
+
+        const inflate = this.inflate;
+        this.flushCallback = (error: any) => {
+          // ignore a write from an inflate that was replaced by reset() while it was flushing
+          if (inflate === this.inflate) {
+            this.onFlush(error);
+          }
+        };
       }; break;
       default: {
         throw new Error(`Unable to use any ${JSON.stringify(Object.values(DependencyTypes))}`);
@@ -123,10 +134,11 @@ export class ZlibDecompressor extends EventSpewer {
     }
 
     const chunk = this.chunks.shift()!;
-    const isEnd = (
-      (this.suffix.length <= chunk.length) &&
-      (chunk.slice(-this.suffix.length).equals(this.suffix))
-    );
+    const suffix = this.suffix;
+    let isEnd = (suffix.length <= chunk.length);
+    for (let i = 1; isEnd && i <= suffix.length; i++) {
+      isEnd = (chunk[chunk.length - i] === suffix[suffix.length - i]);
+    }
 
     switch (Inflate.type) {
       case DependencyTypes.PAKO: {
@@ -145,13 +157,7 @@ export class ZlibDecompressor extends EventSpewer {
         if (isEnd) {
           // the inflate sync flushes every write, so once this write's callback fires all of the payload's data was emitted
           this.flushing = true;
-          const inflate = this.inflate;
-          this.inflate.write(chunk, (error: any) => {
-            // ignore a write from an inflate that was replaced by reset() while it was flushing
-            if (inflate === this.inflate) {
-              this.onFlush(error);
-            }
-          });
+          this.inflate.write(chunk, this.flushCallback);
           return;
         }
         this.inflate.write(chunk);

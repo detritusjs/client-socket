@@ -17,6 +17,8 @@ import {
   SocketInternalCloseReasons,
   SocketMediaCloseCodes,
   SocketStates,
+  DEFAULT_HELLO_TIMEOUT,
+  DEFAULT_RECONNECT_DELAY_MAX,
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
 } from './constants';
@@ -53,7 +55,7 @@ const defaultOptions = {
   video: false,
 };
 
-// how long discord gets to send a new voice server after we ask for one
+// how long discord gets to send a new voice server after we ask for one, or after it took ours away
 const NEW_SERVER_TIMEOUT = 15 * 1000;
 
 // how long wants changes are collected before they are sent
@@ -91,6 +93,8 @@ export class Socket extends EventSpewer {
   endpoint: null | string = null;
   forceMode: MediaEncryptionModes | null = null;
   gateway: GatewaySocket;
+  // a voice server that opens but never sends HELLO gets reconnected
+  helloTimeout = new Timers.Timeout();
   // what we ask the server to forward from users with no entry in `userWants`, 0 to 100
   defaultWants: number = 100;
   identified: boolean = false;
@@ -261,6 +265,7 @@ export class Socket extends EventSpewer {
     if (!this.endpoint) {
       // discord is reallocating the voice server, wait for the next VOICE_SERVER_UPDATE with an endpoint
       this.disconnect();
+      this.waitForNewServer('Voice server was taken away');
     } else if (this.connected) {
       // a `setToken()` call usually follows, only connect if it didn't so we don't open two sockets
       this.disconnect();
@@ -301,7 +306,9 @@ export class Socket extends EventSpewer {
 
   setToken(value: string): void {
     Object.defineProperty(this, 'token', {value});
-    this.newServerTimeout.stop();
+    if (this.endpoint) {
+      this.newServerTimeout.stop();
+    }
     if (!this.identified && this.endpoint) {
       this.resolvePromises();
       try {
@@ -352,8 +359,9 @@ export class Socket extends EventSpewer {
     code?: number,
   ): void {
     Object.defineProperty(this, 'ready', {value: false});
+    this.helloTimeout.stop();
     this.mediaSinkWantsTimeout.stop();
-    this.bucket.clear();
+    // queued sends wait for the resume, `resetSession()` clears them if there won't be one
     this.bucket.lock();
 
     // unresumable events
@@ -392,6 +400,8 @@ export class Socket extends EventSpewer {
    */
   resetSession(): void {
     this.identified = false;
+    // everything queued was meant for the old session (its ssrcs, its dave transitions)
+    this.bucket.clear();
     this.sequence = -1;
     this.connectedUserIds.clear();
     this.ssrcs[MediaSSRCTypes.AUDIO].clear();
@@ -403,6 +413,11 @@ export class Socket extends EventSpewer {
     this.keyframeInterval = null;
     this.voiceBackendVersion = null;
     this.destroyDave();
+    if (this.transport) {
+      // its key belongs to the old session, without dave it would send plain opus in an e2ee call until the next
+      // session description. READY connects it again
+      this.transport.disconnect();
+    }
   }
 
   connect(
@@ -507,7 +522,7 @@ export class Socket extends EventSpewer {
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
         // a resume keeps the udp transport and its key and gets no new session description, so this is the only
-        // signal that audio can be sent again. No key means the transport reconnected, its session description follows
+        // signal that audio can be sent again. We only resume with a key, losing it since means the transport reconnected
         const transport = this.transport;
         if (transport && transport.connected && transport.key) {
           this.emit(SocketEvents.TRANSPORT_READY, transport);
@@ -588,6 +603,7 @@ export class Socket extends EventSpewer {
       }; break;
       case MediaOpCodes.HELLO: {
         const data: MediaGatewayPackets.Hello = packet.d;
+        this.helloTimeout.stop();
         this.serverVersion = (data && data.v) || 3;
         this.setHeartbeat(data);
       }; break;
@@ -831,14 +847,22 @@ export class Socket extends EventSpewer {
     this.requestedNewServer = true;
     this.reconnects = 0;
     this.emit(SocketEvents.WARN, new Error(`Voice server stopped answering after ${this.gateway.reconnectMax} reconnects, asking for a new one`));
-    this.newServerTimeout.start(NEW_SERVER_TIMEOUT, () => {
-      this.kill(new Error(`Tried reconnecting ${this.gateway.reconnectMax} times, and no new voice server came within ${NEW_SERVER_TIMEOUT}ms.`));
-    });
+    this.waitForNewServer(`Tried reconnecting ${this.gateway.reconnectMax} times`);
     this.gateway.voiceStateUpdate(this.guildId, this.channelId, {
       selfDeaf: this.selfDeaf,
       selfMute: this.selfMute,
       selfVideo: this.selfVideo,
     });
+  }
+
+  /**
+   * Kills us if discord sends no VOICE_SERVER_UPDATE with an endpoint in time, `setToken()` stops it once one comes
+   */
+  waitForNewServer(reason: string): void {
+    // an already running wait keeps its deadline
+    this.newServerTimeout.start(NEW_SERVER_TIMEOUT, () => {
+      this.kill(new Error(`${reason}, and no new voice server came within ${NEW_SERVER_TIMEOUT}ms.`));
+    }, false);
   }
 
   kill(
@@ -877,6 +901,7 @@ export class Socket extends EventSpewer {
     }
     this.emit(SocketEvents.CLOSE, {code, reason});
     if (!this.socket || this.socket === target) {
+      const resuming = (this.state === SocketStates.RESUMING);
       this.setState(SocketStates.CLOSED);
       this.cleanup(code);
       switch (code) {
@@ -900,6 +925,10 @@ export class Socket extends EventSpewer {
           return;
         };
         case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID: {
+          if (resuming) {
+            // the server only dropped the session we tried to resume, `cleanup()` reset it so the reconnect identifies
+            break;
+          }
           // our session isn't in this voice channel anymore, usually another session of ours joined voice
           // so don't send a voice state update, it would disconnect that session
           this.kill(new SocketKillError(code, reason), {voiceStateUpdate: false});
@@ -909,6 +938,8 @@ export class Socket extends EventSpewer {
         case SocketMediaCloseCodes.RATE_LIMITED:
         case SocketMediaCloseCodes.CALL_TERMINATED: {
           // should not reconnect, the main gateway will either send a new VOICE_SERVER_UPDATE (reconnects) or a VOICE_STATE_UPDATE (kills)
+          // if it sends neither we would sit here forever
+          this.waitForNewServer(`Voice socket closed with ${code}`);
           return;
         };
       }
@@ -921,6 +952,9 @@ export class Socket extends EventSpewer {
           }
         } else {
           this.emit(SocketEvents.RECONNECTING);
+          // doubles with each reconnect in a row, the jitter keeps every voice connection of a dead server from coming back at once
+          const reconnectDelay = this.gateway.reconnectDelay;
+          const delay = Math.min(reconnectDelay * (2 ** this.reconnects), Math.max(reconnectDelay, DEFAULT_RECONNECT_DELAY_MAX));
           setTimeout(() => {
             // no endpoint (waiting on a VOICE_SERVER_UPDATE) or a new socket was already created
             if (this.killed || !this.endpoint || (this.socket && this.socket !== target)) {
@@ -932,7 +966,7 @@ export class Socket extends EventSpewer {
               this.emit(SocketEvents.WARN, error);
             }
             this.reconnects++;
-          }, this.gateway.reconnectDelay);
+          }, delay + Math.round(Math.random() * delay * 0.1));
         }
       }
     }
@@ -965,15 +999,28 @@ export class Socket extends EventSpewer {
   onOpen(target: BaseSocket) {
     this.emit(SocketEvents.OPEN, target);
     if (this.socket === target) {
+      // the send limit is per connection
+      this.bucket.reset();
       this.setState(SocketStates.OPEN);
+      this.helloTimeout.start(DEFAULT_HELLO_TIMEOUT, () => {
+        if (this.socket !== target) {
+          return;
+        }
+        this.emit(SocketEvents.WARN, new Error(`Voice server sent no HELLO within ${DEFAULT_HELLO_TIMEOUT}ms, reconnecting`));
+        // a stalled server won't answer a close frame either, the close event (1006) runs the reconnect right away
+        target.terminate();
+      });
       if (this.identified) {
         const lastAckAt = this.lastHeartbeatAckAt;
         if (lastAckAt === null || RESUME_MAX_AGE < Date.now() - lastAckAt) {
           // too long since the server last answered, it has likely dropped the session and would close with 4006
           this.resetSession();
+        } else if (!this.transport || !this.transport.key) {
+          // ip discovery or SELECT_PROTOCOL never finished, a resume gets no session description so we'd never get a key
+          this.resetSession();
         }
       }
-      if (this.identified && this.transport) {
+      if (this.identified) {
         this.resume();
       } else {
         this.identify();

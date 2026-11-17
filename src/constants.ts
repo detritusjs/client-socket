@@ -28,6 +28,9 @@ export enum CryptoModules {
 
 export const DAVE_MODULE = '@snazzah/davey';
 
+export const DEFAULT_HANDSHAKE_TIMEOUT = 30000;
+export const DEFAULT_HELLO_TIMEOUT = 30000;
+export const DEFAULT_RECONNECT_DELAY_MAX = 60000;
 export const DEFAULT_SHARD_COUNT = 1;
 export const DEFAULT_SHARD_LAUNCH_DELAY = 5000;
 export const DEFAULT_VOICE_TIMEOUT = 30000;
@@ -333,8 +336,6 @@ export enum GatewayOpCodes {
   STREAM_PING = 21,
   STREAM_SET_PAUSED = 22,
 
-  // old name, kept so existing code keeps working, `GatewayOpCodes[24]` resolves to the newer name below
-  REQUEST_APPLICATION_COMMANDS = 24,
   REQUEST_GUILD_APPLICATION_COMMANDS = 24,
   EMBEDDED_ACTIVITY_LAUNCH = 25,
   EMBEDDED_ACTIVITY_CLOSE = 26,

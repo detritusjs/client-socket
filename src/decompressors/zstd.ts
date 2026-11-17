@@ -26,6 +26,8 @@ export class ZstdDecompressor extends EventSpewer {
   chunkSize: number;
   closed: boolean = false;
   flushing: boolean = false;
+  // made once per stream instead of once per payload
+  flushCallback: (() => void) | null = null;
   stream: zlib.ZstdDecompress | null = null;
 
   constructor(chunkSize: number = 64 * 1024) {
@@ -50,6 +52,7 @@ export class ZstdDecompressor extends EventSpewer {
       this.stream.removeAllListeners();
     }
     this.stream = null;
+    this.flushCallback = null;
   }
 
   feed(chunk: Buffer): void {
@@ -64,6 +67,14 @@ export class ZstdDecompressor extends EventSpewer {
     this.stream = zlib.createZstdDecompress({chunkSize: this.chunkSize, flush: zlib.constants.ZSTD_e_flush});
     this.stream.on('data', this.onData.bind(this));
     this.stream.on('error', this.onError.bind(this));
+
+    const stream = this.stream;
+    this.flushCallback = () => {
+      // ignore a write from a stream that was replaced by reset() while it was flushing
+      if (stream === this.stream) {
+        this.onFlush();
+      }
+    };
     this.closed = false;
   }
 
@@ -85,13 +96,7 @@ export class ZstdDecompressor extends EventSpewer {
 
     // each message is a whole payload, the stream flushes every write so its callback means all of the payload's data was emitted
     this.flushing = true;
-    const stream = this.stream;
-    stream.write(chunk, () => {
-      // ignore a write from a stream that was replaced by reset() while it was flushing
-      if (stream === this.stream) {
-        this.onFlush();
-      }
-    });
+    this.stream.write(chunk, this.flushCallback!);
   }
 
   onData(data: Buffer): void {

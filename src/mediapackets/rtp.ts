@@ -145,44 +145,30 @@ export class RTPHeader {
     this.setNonce(Math.round(Math.random() * MaxNumbers.UINT32));
   }
 
+  // the setters below change their bits in place, the other bits of the byte stay as they are
+
   setVersion(version: number): void {
-    this.buffer.writeUIntBE(
-      ((version & 0x03) << 6 | this.padding << 5 | this.extension << 4 | this.csrcCount),
-      0,
-      1,
-    );
+    this.buffer[0] = (this.buffer[0] & 0x3F) | ((version & 0x03) << 6);
   }
 
   setPadding(padding: boolean | number): void {
-    this.buffer.writeUIntBE(
-      (this.version << 6 | Number(!!padding) << 5 | this.extension << 4 | this.csrcCount),
-      0,
-      1,
-    );
+    this.buffer[0] = (this.buffer[0] & 0xDF) | (Number(!!padding) << 5);
   }
 
   setExtension(extension: boolean | number): void {
-    this.buffer.writeUIntBE(
-      (this.version << 6 | this.padding << 5 | Number(!!extension) << 4 | this.csrcCount),
-      0,
-      1,
-    );
+    this.buffer[0] = (this.buffer[0] & 0xEF) | (Number(!!extension) << 4);
   }
 
   setCSRCCount(csrcCount: number): void {
-    this.buffer.writeUIntBE(
-      (this.version << 6 | this.padding << 5 | this.extension << 4 | (csrcCount & 0x0F)),
-      0,
-      1,
-    );
+    this.buffer[0] = (this.buffer[0] & 0xF0) | (csrcCount & 0x0F);
   }
 
   setMarker(marker: boolean | number): void {
-    this.buffer.writeUIntBE((Number(!!marker) << 7 | this.payloadType), 1, 1);
+    this.buffer[1] = (this.buffer[1] & 0x7F) | (Number(!!marker) << 7);
   }
 
   setPayloadType(payloadType: number): void {
-    this.buffer.writeUIntBE((this.marker << 7 | (payloadType & 0x7F)), 1, 1);
+    this.buffer[1] = (this.buffer[1] & 0x80) | (payloadType & 0x7F);
   }
 
   setSequence(
@@ -269,12 +255,8 @@ export class RTPHeader {
   }
 
   reset(): void {
-    const firstByte = this.firstByte;
-    const secondByte = this.secondByte;
-
-    this.buffer.fill(0);
-    this.buffer.writeUIntBE(firstByte, 0, 1);
-    this.buffer.writeUIntBE(secondByte, 1, 1);
+    // keeps the first two bytes (version, flags, marker, payload type)
+    this.buffer.fill(0, 2);
 
     if (this.payload) {
       this.payload.fill(0);

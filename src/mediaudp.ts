@@ -159,10 +159,8 @@ export class Socket extends EventSpewer {
   local: IpInformation;
   mediaGateway: MediaSocket;
   mode: null | string;
-  nonces: {
-    audio: RTPNonce,
-    video?: RTPNonce,
-  };
+  // every packet we encrypt (audio, video, rtx, rtcp) takes its nonce from this one counter, they all share the key
+  nonce: RTPNonce;
   remote: IpInformation;
   socket: dgram.Socket | null;
   ssrc: number;
@@ -189,17 +187,17 @@ export class Socket extends EventSpewer {
     // a keepalive alone shouldn't keep the process running
     this.keepAlive.interval.unref();
 
-    this.headers = {audio: new RTPHeader({randomize: true})};
-    this.nonces = {audio: new RTPNonce({randomize: true})};
+    // opus is the only audio codec, the session description's `audio_codec` doesn't have to tell us
+    this.headers = {audio: new RTPHeader({payloadType: RTPPayloadTypes.OPUS, randomize: true})};
+    this.nonce = new RTPNonce({randomize: true});
 
     if (this.videoEnabled) {
       this.headers.rtx = new RTPHeader({randomize: true});
       this.headers.video = new RTPHeader({randomize: true});
-      this.nonces.video = new RTPNonce({randomize: true});
     }
 
     this.codecs = {
-      audio: null,
+      audio: MediaCodecs.OPUS,
       video: null,
     };
     this.local = {
@@ -566,8 +564,7 @@ export class Socket extends EventSpewer {
     // rtcp is feedback on what we send (nacks, keyframe requests), it matters even when we don't receive media
     if (!this.receiveEnabled && !RTCP_PACKET_TYPE_SET.has(packet[1])) {return;}
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
-      const error = new MediaPacketError('Received a packet from an unknown IP/Port', from, packet);
-      this.emit(SocketEvents.WARN, error);
+      this.emitPacketError(SocketEvents.WARN, 'Received a packet from an unknown IP/Port', from, packet);
       return;
     }
     if (packet.length === KEEPALIVE_PACKET_LENGTH) {
@@ -575,18 +572,15 @@ export class Socket extends EventSpewer {
       return;
     }
     if (!this.key) {
-      const error = new MediaPacketError('Received a packet before the Session Description', from, packet);
-      this.emit(SocketEvents.WARN, error);
+      this.emitPacketError(SocketEvents.WARN, 'Received a packet before the Session Description', from, packet);
       return;
     }
     if (packet.length <= 12) {
-      const error = new MediaPacketError('Received an rtp packet that\'s way too small to be valid', from, packet);
-      this.emit(SocketEvents.WARN, error);
+      this.emitPacketError(SocketEvents.WARN, 'Received an rtp packet that\'s way too small to be valid', from, packet);
       return;
     }
     if (!isValidRTPHeader(packet)) {
-      const error = new MediaPacketError('Invalid RTP Packet', from, packet);
-      this.emit(SocketEvents.WARN, error);
+      this.emitPacketError(SocketEvents.WARN, 'Invalid RTP Packet', from, packet);
       return;
     }
 
@@ -650,8 +644,7 @@ export class Socket extends EventSpewer {
         headerLength += 4;
       }
       if (packet.length < headerLength + RTP_NONCE_LENGTH) {
-        const error = new MediaRTPError('Received an rtp packet that\'s way too small to be valid', from, packet, rtp);
-        this.emit(SocketEvents.WARN, error);
+        this.emitRTPError(SocketEvents.WARN, 'Received an rtp packet that\'s way too small to be valid', from, packet, rtp);
         return;
       }
 
@@ -670,15 +663,24 @@ export class Socket extends EventSpewer {
         return;
       }
 
-      if (rtp.header.padding && data.length) {
+      // the header extension's body is encrypted along with the payload, we don't use it
+      let end = data.length;
+      if (end < extensionLength) {
+        this.emitRTPError(SocketEvents.WARN, 'Received an rtp packet with a header extension longer than its payload', from, packet, rtp);
+        return;
+      }
+      if (rtp.header.padding) {
         // RFC3550 Section 5.1
         // last byte contains amount of padding, including itself, slice that stuff off
-        data = data.subarray(0, data.length - data.readUInt8(data.length - 1));
+        const padding = (end) ? data[end - 1] : 0;
+        if (!padding || end - extensionLength < padding) {
+          this.emitRTPError(SocketEvents.WARN, 'Received an rtp packet with invalid padding', from, packet, rtp);
+          return;
+        }
+        end -= padding;
       }
-
-      if (extensionLength) {
-        // the header extension's body is encrypted along with the payload, we don't use it
-        data = data.subarray(extensionLength);
+      if (extensionLength || end !== data.length) {
+        data = data.subarray(extensionLength, end);
       }
 
       let ssrc = rtp.header.ssrc;
@@ -877,8 +879,8 @@ export class Socket extends EventSpewer {
     payload.writeUInt32BE(mediaSSRC >>> 0, 0);
     fci.copy(payload, 4);
 
-    // shares the audio nonce counter so the two never reuse a nonce under the same key
-    const nonce = this.nonces.audio.set();
+    // every packet we send is encrypted with the same key, they all take the next nonce from the one counter
+    const nonce = this.nonce.set();
     this.send(RTPCrypto.encryptPacket(this.mode!, this.key!, header, payload, nonce));
   }
 
@@ -983,7 +985,7 @@ export class Socket extends EventSpewer {
       payload.writeUInt16BE(sequence, 0);
       packet.payload.copy(payload, 2);
 
-      const nonce = this.nonces.video!.set();
+      const nonce = this.nonce.set();
       this.send(RTPCrypto.encryptPacket(this.mode!, this.key!, header.buffer, payload, nonce));
     }
   }
@@ -992,6 +994,20 @@ export class Socket extends EventSpewer {
     this.frameAssemblers.delete(ssrc);
     this.keyframeRequests.delete(ssrc);
     this.nackTrackers.delete(ssrc);
+  }
+
+  /**
+   * Same as `emitRTPError()`, for packets we drop before looking at them as rtp
+   */
+  emitPacketError(
+    event: string,
+    message: string,
+    from: UDPFrom,
+    packet: Buffer,
+  ): void {
+    if (this.hasEventListener(event)) {
+      this.emit(event, new MediaPacketError(message, from, packet));
+    }
   }
 
   /**
@@ -1061,6 +1077,13 @@ export class Socket extends EventSpewer {
     this._sendFrame(packet, MediaCodecTypes.AUDIO, options);
   }
 
+  /**
+   * Sends one rtp payload you packetized yourself (codec payload descriptor included) on the video stream, the marker
+   * bit is whatever `headers.video` has. Without a `timestamp` the packet keeps the previous one's (same frame), give
+   * the first packet of every frame its 90kHz timestamp
+   * Not DAVE e2e encrypted: DAVE encrypts whole frames before they're split into packets, a single packet can't be.
+   * Viewers can't decrypt these while there's a DAVE session (protocol version above 0), send frames with `sendVideo()`
+   */
   sendVideoFrame(
     packet: Buffer,
     options?: FrameOptions,
@@ -1101,8 +1124,14 @@ export class Socket extends EventSpewer {
       return false;
     }
 
-    const keyframe = (options.keyframe === undefined) ? isKeyframe(codec, frame) : options.keyframe;
+    // only vp9's payload descriptor carries it, so skip scanning the frame for other codecs
+    // read from the unencrypted frame, before dave
+    const keyframe = (options.keyframe === undefined) ? (codec === MediaCodecs.VP9 && isKeyframe(codec, frame)) : options.keyframe;
     const data = (dave) ? dave.encryptVideo(frame, codec) : frame;
+    if (!data) {
+      // the e2ee session can't encrypt it (yet)
+      return false;
+    }
     const packets = packetize(codec, data, {keyframe, pictureId: this.pictureId});
     this.pictureId = (this.pictureId + 1) & 0x7FFF;
 
@@ -1120,6 +1149,9 @@ export class Socket extends EventSpewer {
     return true;
   }
 
+  /**
+   * `type: 'video'` is the same as `sendVideoFrame()`, see it about timestamps and DAVE
+   */
   sendFrame(
     packet: Buffer,
     options: FrameOptions = DEFAULT_FRAME_OPTIONS,
@@ -1148,24 +1180,34 @@ export class Socket extends EventSpewer {
 
     const isAudio = (type === MediaCodecTypes.AUDIO);
     const cachedHeader = (isAudio) ? this.headers.audio : this.headers.video!;
-    const cachedNonce = (isAudio) ? this.nonces.audio : this.nonces.video!;
 
-    let sequence = options.sequence;
-    let incrementSequence = options.incrementSequence;
+    const dave = this.mediaGateway.dave;
+    if (dave && isAudio) {
+      const encrypted = dave.encrypt(packet);
+      if (!encrypted) {
+        // the e2ee session isn't ready, nobody could decrypt it. dropped before it uses up a sequence number
+        return;
+      }
+      packet = encrypted;
+    }
+
+    const sequence = options.sequence;
+    const incrementSequence = options.incrementSequence;
     let timestamp = options.timestamp;
     let incrementTimestamp = options.incrementTimestamp;
-    if (useCache && timestamp === undefined && isAudio) {
-      // `setTimestamp(undefined)` picks a random timestamp, which breaks the receiver's jitter buffer, advance by one frame instead
-      timestamp = AUDIO_FRAME_SAMPLES;
+    if (timestamp === undefined) {
+      // `setTimestamp(undefined)` picks a random timestamp, which breaks the receiver's jitter buffer
+      // audio advances by one frame, a video packet stays on the current frame (its packets share the timestamp)
+      timestamp = (isAudio) ? AUDIO_FRAME_SAMPLES : 0;
       incrementTimestamp = true;
     }
 
-    let header: RTPHeader;
-    let rtpNonce: RTPNonce;
-    if (useCache) {
-      header = cachedHeader;
-      rtpNonce = cachedNonce;
-    } else {
+    // the stream's sequence/timestamp live in the cached header, `useCache: false` only sends them with a fresh header
+    cachedHeader.setSequence(sequence, incrementSequence);
+    cachedHeader.setTimestamp(timestamp, incrementTimestamp);
+
+    let header = cachedHeader;
+    if (!useCache) {
       let payloadType: number, ssrc: number;
       switch (type) {
         case MediaCodecTypes.AUDIO: {
@@ -1181,21 +1223,10 @@ export class Socket extends EventSpewer {
         };
       }
       header = new RTPHeader({payloadType, ssrc});
-      rtpNonce = new RTPNonce({randomize: true});
-
-      if (sequence === undefined) {
-        sequence = cachedHeader.sequence;
-        incrementSequence = false;
-      }
-      if (timestamp === undefined) {
-        timestamp = cachedHeader.timestamp;
-        incrementTimestamp = false;
-      }
+      header.setSequence(cachedHeader.sequence);
+      header.setTimestamp(cachedHeader.timestamp);
     }
-
-    header.setSequence(sequence, incrementSequence);
-    header.setTimestamp(timestamp, incrementTimestamp);
-    const nonce = rtpNonce.set(options.nonce, options.incrementNonce);
+    const nonce = this.nonce.set(options.nonce, options.incrementNonce);
 
     if (!isAudio) {
       // kept for a second to answer nacks with, copied since callers are free to reuse their buffer
@@ -1205,11 +1236,6 @@ export class Socket extends EventSpewer {
         payloadType: header.payloadType,
         timestamp: header.timestamp,
       });
-    }
-
-    const dave = this.mediaGateway.dave;
-    if (dave && type === MediaCodecTypes.AUDIO) {
-      packet = dave.encrypt(packet);
     }
 
     // rtpsize modes: rtp header | encrypted payload + auth tag | 4 byte nonce

@@ -3,6 +3,7 @@ import { BaseCollection, EventSpewer, Timers } from 'detritus-utils';
 import {
   SocketCloseCodes,
   SocketEventsBase,
+  DEFAULT_HANDSHAKE_TIMEOUT,
 } from './constants';
 
 
@@ -22,10 +23,14 @@ export class BaseSocket extends EventSpewer {
 
   socket: any;
 
-  constructor(url: string) {
+  constructor(
+    url: string,
+    handshakeTimeout: number = DEFAULT_HANDSHAKE_TIMEOUT,
+  ) {
     super();
 
-    this.socket = new WebSocket(url);
+    // a node that accepts the connection but never answers the upgrade would otherwise leave us connecting forever
+    this.socket = new WebSocket(url, {handshakeTimeout});
     this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this));
     this.socket.on(SocketEventsBase.PONG, this.onPong.bind(this));
 

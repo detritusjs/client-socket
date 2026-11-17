@@ -11,10 +11,9 @@ export class Bucket {
   priority: Array<Function>;
   queue: Array<Function>;
   reserved: number;
-  sent: {
-    amount: number,
-    reset: number,
-  };
+  // ring of the last `limit` send times, `sentIndex` is the oldest one (and the next one to overwrite)
+  sent: Array<number>;
+  sentIndex: number;
 
   constructor(
     limit: number = 0,
@@ -27,10 +26,8 @@ export class Bucket {
     this.priority = [];
     this.queue = [];
     this.reserved = reserved;
-    this.sent = {
-      amount: 0,
-      reset: 0,
-    };
+    this.sent = new Array(limit).fill(0);
+    this.sentIndex = 0;
 
     Object.defineProperties(this, {
       resetTimeout: {enumerable: false},
@@ -61,6 +58,10 @@ export class Bucket {
     this.queue.length = 0;
   }
 
+  clearPriority(): void {
+    this.priority.length = 0;
+  }
+
   lock(unlockIn: number = 0): void {
     this.timeout.stop();
 
@@ -72,25 +73,39 @@ export class Bucket {
     }
   }
 
+  // forgets the past sends, for when the limit starts over (like a new connection)
+  reset(): void {
+    this.resetTimeout.stop();
+    this.sent.fill(0);
+    this.sentIndex = 0;
+    this.shift();
+  }
+
   shift(): void {
     while (this.priority.length || (!this.locked && this.queue.length)) {
       const isPriority = !!this.priority.length;
       if (this.limit) {
-        const now = Date.now();
-        if (this.sent.reset + this.delay <= now) {
-          this.sent.reset = now;
-          this.sent.amount = 0;
+        if (this.sent.length !== this.limit) {
+          // `limit` was changed, start the window over
+          this.sent = new Array(this.limit).fill(0);
+          this.sentIndex = 0;
         }
 
+        // sliding window, we can send once the `limit`th most recent send is at least `delay` old
         const limit = (isPriority) ? this.limit : Math.max(this.limit - this.reserved, 0);
-        if (limit <= this.sent.amount) {
-          // wait for the window to reset, keeping an already scheduled wakeup
-          this.resetTimeout.start(this.sent.reset + this.delay - now, () => {
-            this.shift();
-          }, false);
+        if (!limit) {
           return;
         }
-        this.sent.amount++;
+        const now = Date.now();
+        const sentAt = this.sent[(this.sentIndex + this.limit - limit) % this.limit];
+        if (now < sentAt + this.delay) {
+          this.resetTimeout.start(sentAt + this.delay - now, () => {
+            this.shift();
+          });
+          return;
+        }
+        this.sent[this.sentIndex] = now;
+        this.sentIndex = (this.sentIndex + 1) % this.limit;
       }
 
       const throttled = (isPriority) ? this.priority.shift() : this.queue.shift();

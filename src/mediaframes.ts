@@ -12,6 +12,11 @@ const FRAME_MAX_BLOCKED = 10;
 const FRAME_REORDER_WAIT = 150;
 // annex b start code, what decoders (and DAVE's h264 handling) expect between nal units
 const H264_START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+// the short form, a 4 byte start code ends with it too
+const H264_START_CODE_SHORT = Buffer.from([0x00, 0x00, 0x01]);
+// packets further behind the stream than a gap (NACK_MAX_GAP) that keep coming for this long, with nothing newer in
+// between, are from a sender that restarted its sequence numbers, stale retransmissions and duplicates stop well before
+const SEQUENCE_RESTART_WAIT = 150;
 
 export enum H264NalTypes {
   SLICE = 1,
@@ -19,16 +24,20 @@ export enum H264NalTypes {
   SEI = 6,
   SPS = 7,
   PPS = 8,
+  AUD = 9,
   STAP_A = 24,
   FU_A = 28,
 }
 
 
 export interface DepacketizedPayload {
-  // the packet's share of the frame, already in the form the frame is built from (annex b for h264)
-  data: Buffer,
-  // null when the packet doesn't say (only the first packet of a vp8/vp9 frame does)
+  // the packet's share of the frame, already in the form the frame is built from (annex b for h264), the frame is every
+  // packet's parts joined together
+  parts: Array<Buffer>,
+  // null when the packet doesn't say (only the first packet of a vp8/vp9 frame does), for h264 if it has an idr slice
   keyframe: boolean | null,
+  // h264 only, the types of the nal units starting in this packet, in order
+  nalTypes?: Array<number>,
   // vp8/vp9 mark the first packet of a frame, h264 can only tell us a packet could be one
   start: boolean,
 }
@@ -61,6 +70,8 @@ interface PendingFrame {
   // sequence number of the frame's first packet once it's assembled, before that the oldest one we have
   firstSequence: number,
   markerSequence: null | number,
+  // h264 only, a bit for each type of nal unit in the frame once it's assembled
+  nalTypes: number,
   packets: Map<number, PendingPacket>,
   timestamp: number,
 }
@@ -125,7 +136,7 @@ export function depacketizeVP8(payload: Buffer): DepacketizedPayload | null {
     // RFC 6386 Section 9.1, the frame tag's P bit is 0 for keyframes. DAVE leaves this byte unencrypted
     keyframe = (data[0] & 0x01) === 0;
   }
-  return {data, keyframe, start: frameStart};
+  return {parts: [data], keyframe, start: frameStart};
 }
 
 /**
@@ -194,7 +205,7 @@ export function depacketizeVP9(payload: Buffer): DepacketizedPayload | null {
   if (start) {
     keyframe = !interPicturePredicted && spatialId === 0;
   }
-  return {data, keyframe, start};
+  return {parts: [data], keyframe, start};
 }
 
 /**
@@ -209,7 +220,7 @@ export function depacketizeH264(payload: Buffer): DepacketizedPayload | null {
   switch (nalType) {
     case H264NalTypes.STAP_A: {
       const parts: Array<Buffer> = [];
-      let keyframe = false;
+      const nalTypes: Array<number> = [];
       let offset = 1;
       while (offset + 2 <= payload.length) {
         const size = payload.readUInt16BE(offset);
@@ -218,16 +229,14 @@ export function depacketizeH264(payload: Buffer): DepacketizedPayload | null {
           return null;
         }
         const nal = payload.subarray(offset, offset + size);
-        if ((nal[0] & 0x1F) === H264NalTypes.IDR) {
-          keyframe = true;
-        }
+        nalTypes.push(nal[0] & 0x1F);
         parts.push(H264_START_CODE, nal);
         offset += size;
       }
       if (!parts.length) {
         return null;
       }
-      return {data: Buffer.concat(parts), keyframe, start: true};
+      return {parts, keyframe: nalTypes.includes(H264NalTypes.IDR), nalTypes, start: true};
     };
     case H264NalTypes.FU_A: {
       if (payload.length < 2) {
@@ -241,12 +250,13 @@ export function depacketizeH264(payload: Buffer): DepacketizedPayload | null {
         // the original nal header is split between the fu indicator (F + NRI) and the fu header (type)
         const nalHeader = Buffer.from([(payload[0] & 0xE0) | fragmentType]);
         return {
-          data: Buffer.concat([H264_START_CODE, nalHeader, data]),
+          parts: [H264_START_CODE, nalHeader, data],
           keyframe: fragmentType === H264NalTypes.IDR,
+          nalTypes: [fragmentType],
           start: true,
         };
       }
-      return {data, keyframe: (fragmentType === H264NalTypes.IDR) || null, start: false};
+      return {parts: [data], keyframe: (fragmentType === H264NalTypes.IDR) || null, nalTypes: [], start: false};
     };
   }
   if (nalType === 0 || 24 <= nalType) {
@@ -254,8 +264,9 @@ export function depacketizeH264(payload: Buffer): DepacketizedPayload | null {
     return null;
   }
   return {
-    data: Buffer.concat([H264_START_CODE, payload]),
+    parts: [H264_START_CODE, payload],
     keyframe: nalType === H264NalTypes.IDR,
+    nalTypes: [nalType],
     start: true,
   };
 }
@@ -292,7 +303,12 @@ export function isKeyframe(codec: MediaCodecs | string, frame: Buffer): boolean 
     // profile 0/1 frame header, show_existing_frame and frame_type are both 0 for keyframes
     case MediaCodecs.VP9: return ((frame[0] >> 2) & 0x03) === 0;
     case MediaCodecs.H264: {
-      return splitAnnexB(frame).some((unit) => (unit[0] & 0x1F) === H264NalTypes.IDR);
+      for (let i = frame.indexOf(H264_START_CODE_SHORT); i !== -1; i = frame.indexOf(H264_START_CODE_SHORT, i + 3)) {
+        if (i + 3 < frame.length && (frame[i + 3] & 0x1F) === H264NalTypes.IDR) {
+          return true;
+        }
+      }
+      return false;
     };
   }
   return false;
@@ -339,18 +355,12 @@ export function packetizeVP9(frame: Buffer, options: PacketizeOptions): Array<Bu
 export function splitAnnexB(frame: Buffer): Array<Buffer> {
   const units: Array<Buffer> = [];
   let start = -1;
-  let i = 0;
-  while (i + 3 <= frame.length) {
-    if (frame[i] === 0 && frame[i + 1] === 0 && frame[i + 2] === 1) {
-      if (start !== -1) {
-        // a 4 byte start code leaves its leading zero on the previous unit
-        units.push(frame.subarray(start, (frame[i - 1] === 0) ? i - 1 : i));
-      }
-      i += 3;
-      start = i;
-    } else {
-      i++;
+  for (let i = frame.indexOf(H264_START_CODE_SHORT); i !== -1; i = frame.indexOf(H264_START_CODE_SHORT, start)) {
+    if (start !== -1) {
+      // a 4 byte start code leaves its leading zero on the previous unit
+      units.push(frame.subarray(start, (frame[i - 1] === 0) ? i - 1 : i));
     }
+    start = i + 3;
   }
   if (start !== -1) {
     units.push(frame.subarray(start));
@@ -406,6 +416,11 @@ export function packetize(codec: MediaCodecs | string, frame: Buffer, options: P
 export class MediaFrameAssembler {
   codec: MediaCodecs;
   frames = new Map<number, PendingFrame>();
+  // h264 only, if we handed out an sps/pps already, later idr slices can refer to it
+  h264Pps: boolean = false;
+  h264Sps: boolean = false;
+  // when packets started showing up too far behind to be late
+  lateSince: null | number = null;
   // sequence number of the last packet of the last frame we handed out (or gave up on)
   lastSequence: null | number = null;
   // sequence numbers of packets without any media (padding), so they don't look like losses
@@ -425,13 +440,25 @@ export class MediaFrameAssembler {
   ): AssemblerResult {
     const result: AssemblerResult = {frames: [], requestKeyframe: false};
     if (this.lastSequence !== null && !isSequenceNewer(this.lastSequence, sequence)) {
-      // late or duplicate, its frame is already gone
-      return result;
+      if (sequenceDistance(sequence, this.lastSequence) <= NACK_MAX_GAP) {
+        // late or duplicate, its frame is already gone
+        return result;
+      }
+      // too far behind to be late, the sender restarted its sequence numbers if they keep coming
+      if (this.lateSince === null) {
+        this.lateSince = now;
+      }
+      if (now - this.lateSince < SEQUENCE_RESTART_WAIT) {
+        return result;
+      }
+      this.reset();
     }
+    this.lateSince = null;
 
     if (!payload.length) {
       this.paddingSequences.add(sequence);
       this.skipPadding();
+      this.assembleAll(now);
       this.drain(now, result);
       return result;
     }
@@ -450,6 +477,7 @@ export class MediaFrameAssembler {
         lastSeen: now,
         firstSequence: sequence,
         markerSequence: null,
+        nalTypes: 0,
         packets: new Map(),
         timestamp,
       };
@@ -466,14 +494,18 @@ export class MediaFrameAssembler {
       pending.markerSequence = sequence;
     }
 
-    // h264 frames can only be told apart by the packet before them, which might be the one that just came in
-    for (let other of this.frames.values()) {
-      if (!other.assembled && other.markerSequence !== null) {
-        this.assemble(other, now);
-      }
-    }
+    this.assembleAll(now);
     this.drain(now, result);
     return result;
+  }
+
+  protected assembleAll(now: number): void {
+    // h264 frames can only be told apart by the packet before them, which might be the one that just came in
+    for (let pending of this.frames.values()) {
+      if (!pending.assembled && pending.markerSequence !== null) {
+        this.assemble(pending, now);
+      }
+    }
   }
 
   protected assemble(pending: PendingFrame, now: number): void {
@@ -490,21 +522,38 @@ export class MediaFrameAssembler {
     if (!first.payload.start) {
       return;
     }
-    if (this.codec === MediaCodecs.H264 && !this.isFrameBoundary(firstSequence, pending.timestamp)) {
+    if (this.codec === MediaCodecs.H264 && !this.isFrameBoundary(pending, firstSequence, now)) {
       // h264 has no frame start flag, a missing slice at the front would go unnoticed otherwise
       return;
     }
 
     const parts: Array<Buffer> = [];
     let keyframe = false;
+    let nalTypes = 0;
     for (let i = 0; i < pending.packets.size; i++) {
       const packet = pending.packets.get((firstSequence + i) & 0xFFFF)!;
-      parts.push(packet.payload.data);
+      for (let part of packet.payload.parts) {
+        parts.push(part);
+      }
       if (packet.payload.keyframe) {
         keyframe = true;
       }
+      if (packet.payload.nalTypes) {
+        for (let type of packet.payload.nalTypes) {
+          nalTypes |= 1 << type;
+        }
+      }
+    }
+    if (this.codec === MediaCodecs.H264) {
+      // an idr slice only decodes with the sps and pps it refers to, sent with it or handed out before
+      keyframe = (
+        keyframe &&
+        (this.h264Sps || !!(nalTypes & (1 << H264NalTypes.SPS))) &&
+        (this.h264Pps || !!(nalTypes & (1 << H264NalTypes.PPS)))
+      );
     }
     pending.firstSequence = firstSequence;
+    pending.nalTypes = nalTypes;
     pending.assembled = {data: Buffer.concat(parts), keyframe, timestamp: pending.timestamp};
     pending.assembledAt = now;
   }
@@ -574,6 +623,12 @@ export class MediaFrameAssembler {
         return;
       }
     }
+    if (pending.nalTypes & (1 << H264NalTypes.SPS)) {
+      this.h264Sps = true;
+    }
+    if (pending.nalTypes & (1 << H264NalTypes.PPS)) {
+      this.h264Pps = true;
+    }
     result.frames.push(frame);
   }
 
@@ -605,24 +660,28 @@ export class MediaFrameAssembler {
   /**
    * If the packet before `sequence` ended an earlier frame (or there's nothing before it to compare with)
    */
-  protected isFrameBoundary(sequence: number, timestamp: number): boolean {
+  protected isFrameBoundary(pending: PendingFrame, sequence: number, now: number): boolean {
     const previous = (sequence - 1) & 0xFFFF;
     if (previous === this.lastSequence || this.paddingSequences.has(previous)) {
       return true;
     }
     for (let other of this.frames.values()) {
-      if (other.timestamp !== timestamp && other.packets.has(previous)) {
+      if (other !== pending && other.packets.has(previous)) {
         return true;
       }
     }
     if (this.lastSequence === null) {
       // the first frame we see, fine as long as nothing older is waiting
       for (let other of this.frames.values()) {
-        if (other.timestamp !== timestamp && isSequenceNewer(other.firstSequence, sequence)) {
+        if (other !== pending && isSequenceNewer(other.firstSequence, sequence)) {
           return false;
         }
       }
-      return true;
+      // and its first packets (like the sps and pps in front of a keyframe) aren't just running late, nothing that
+      // matters goes in front of an access unit delimiter or an sps
+      const nalTypes = pending.packets.get(sequence)!.payload.nalTypes;
+      const nalType = (nalTypes && nalTypes.length) ? nalTypes[0] : 0;
+      return nalType === H264NalTypes.AUD || nalType === H264NalTypes.SPS || FRAME_REORDER_WAIT <= now - pending.firstSeen;
     }
     return false;
   }
@@ -658,6 +717,9 @@ export class MediaFrameAssembler {
 
   reset(): void {
     this.frames.clear();
+    this.h264Pps = false;
+    this.h264Sps = false;
+    this.lateSince = null;
     this.lastSequence = null;
     this.paddingSequences.clear();
     this.waitingForKeyframe = true;
@@ -684,6 +746,8 @@ interface MissingPacket {
  */
 export class MediaNackTracker {
   highest: null | number = null;
+  // when packets started showing up too far behind to be late
+  lateSince: null | number = null;
   missing = new Map<number, MissingPacket>();
 
   /**
@@ -705,9 +769,21 @@ export class MediaNackTracker {
         }
       }
       this.highest = sequence;
+      this.lateSince = null;
     } else {
       // late or retransmitted
       this.missing.delete(sequence);
+      if (NACK_MAX_GAP < sequenceDistance(sequence, this.highest)) {
+        // too far behind to be late, the sender restarted its sequence numbers if they keep coming
+        if (this.lateSince === null) {
+          this.lateSince = now;
+        }
+        if (SEQUENCE_RESTART_WAIT <= now - this.lateSince) {
+          this.reset();
+          this.highest = sequence;
+          return [];
+        }
+      }
     }
 
     const sequences: Array<number> = [];
@@ -727,6 +803,7 @@ export class MediaNackTracker {
 
   reset(): void {
     this.highest = null;
+    this.lateSince = null;
     this.missing.clear();
   }
 }

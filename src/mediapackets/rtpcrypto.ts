@@ -21,7 +21,7 @@ const PCrypto: {
 (async () => {
   for (let name of PCrypto.modules) {
     try {
-      const module = PCrypto.available[name] = require(name);
+      const module = require(name);
       switch (name) {
         case CryptoModules.LIBSODIUM_WRAPPERS: {
           if (module.ready) {
@@ -29,6 +29,8 @@ const PCrypto: {
           }
         }; break;
       }
+      // only once it's usable, a module whose `ready` rejected would be picked otherwise
+      PCrypto.available[name] = module;
       break;
     } catch(error) {
       continue;
@@ -126,7 +128,8 @@ export default {
           };
           case CryptoModules.LIBSODIUM_WRAPPERS: {
             const packet: Uint8Array = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(data, header, null, fullNonce, key);
-            return Buffer.from(packet);
+            // wraps its memory instead of copying it
+            return Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength);
           };
         }
         if (HAS_CHACHA20_POLY1305) {
@@ -185,6 +188,24 @@ export default {
           nonce.copy(packet, header.length + encryptedLength, 0, RTP_NONCE_LENGTH);
           return packet;
         }
+        if (!this.using && HAS_CHACHA20_POLY1305) {
+          // same as aes-256-gcm above, no intermediate ciphertext + tag buffer
+          prepareXChaCha(key, fullNonce);
+          const cipher = crypto.createCipheriv(CHACHA20_POLY1305, XChaChaKey, XChaChaNonce, {authTagLength: AEAD_TAG_LENGTH});
+          cipher.setAAD(header);
+          const encrypted = cipher.update(data);
+          // a stream cipher never has anything left over in final(), it's only needed for the auth tag
+          cipher.final();
+          const tag = cipher.getAuthTag();
+
+          const packet = Buffer.allocUnsafe(header.length + encrypted.length + tag.length + RTP_NONCE_LENGTH);
+          let offset = header.copy(packet, 0);
+          offset += encrypted.copy(packet, offset);
+          offset += tag.copy(packet, offset);
+          nonce.copy(packet, offset, 0, RTP_NONCE_LENGTH);
+          return packet;
+        }
+        // libsodium-wrappers hands back its own memory, it's copied once into the packet
         const encrypted = this.encrypt(mode, key, header, data, nonce);
         return Buffer.concat([header, encrypted, nonce.subarray(0, RTP_NONCE_LENGTH)]);
       };
@@ -227,7 +248,7 @@ export default {
             };
             case CryptoModules.LIBSODIUM_WRAPPERS: {
               const packet: Uint8Array = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, data, header, fullNonce, key);
-              return Buffer.from(packet);
+              return Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength);
             };
           }
           if (HAS_CHACHA20_POLY1305) {
