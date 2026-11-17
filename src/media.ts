@@ -38,6 +38,22 @@ export interface VideoStreamSettings {
   maxResolution?: {height: number, type?: string, width: number},
 }
 
+/**
+ * Everything a voice connection uses from the main gateway, `Gateway.Socket` is one. A process without the main gateway
+ * (a separate voice node) passes its own: the session and user ids the voice server checks, the reconnect settings, and
+ * `voiceStateUpdate()` for leaving or asking for a new voice server, which it can forward to whoever owns the gateway
+ */
+export interface GatewayLike {
+  autoReconnect: boolean,
+  // we take ourselves out of it when killed
+  mediaGateways: {delete(serverId: string): unknown},
+  reconnectDelay: number,
+  reconnectMax: number,
+  sessionId: null | string,
+  userId: null | string,
+  voiceStateUpdate: GatewaySocket['voiceStateUpdate'],
+}
+
 export interface SocketOptions {
   channelId: string,
   forceMode?: MediaEncryptionModes | string,
@@ -92,7 +108,7 @@ export class Socket extends EventSpewer {
   dave: DaveSession | null = null;
   endpoint: null | string = null;
   forceMode: MediaEncryptionModes | null = null;
-  gateway: GatewaySocket;
+  gateway: GatewayLike;
   // a voice server that opens but never sends HELLO gets reconnected
   helloTimeout = new Timers.Timeout();
   // what we ask the server to forward from users with no entry in `userWants`, 0 to 100
@@ -151,7 +167,7 @@ export class Socket extends EventSpewer {
   voiceBackendVersion: {rtcWorker: string, voice: string} | null = null;
 
   constructor(
-    gateway: GatewaySocket,
+    gateway: GatewayLike,
     options: SocketOptions,
   ) {
     super();
