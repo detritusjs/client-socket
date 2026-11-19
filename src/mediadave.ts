@@ -37,6 +37,10 @@ function isDaveFrame(frame: Buffer): boolean {
 
 
 export interface DaveTransitionResult {
+  // a commit for a group we aren't in yet (or one without queued proposals)
+  ignored: boolean,
+  // the gateway expects a transition ready, never for transition id 0
+  sendReady: boolean,
   success: boolean,
   transitionId: number,
 }
@@ -44,6 +48,14 @@ export interface DaveTransitionResult {
 /**
  * End-to-End Encryption via Discord's Audio & Video End-to-End Encryption (DAVE) protocol
  * Wraps `@snazzah/davey`'s DAVESession (bindings for libdave)
+ *
+ * The phase is spread over a few fields:
+ * - plaintext: `protocolVersion` 0, incoming frames with a DAVE footer are dropped unless passthrough decrypts them
+ * - `awaitingKeys`: e2ee without a key yet (until the welcome/commit's transition executes), outgoing frames are dropped
+ * - e2ee: `canEncrypt` with `protocolVersion` > 0. A `reinit` keeps the old keys until the next transition, like libdave
+ * - `pendingTransition`: between a prepare (or commit/welcome) and its execute, which switches our encryption key.
+ *   A pending downgrade turns on passthrough until the execute
+ * - `reinitializing`: recovering from an invalid commit/welcome or too many decrypt failures, until the next transition
  */
 export class DaveSession extends EventSpewer {
   channelId: string;
@@ -80,8 +92,25 @@ export class DaveSession extends EventSpewer {
     return (Davey) ? Davey.DAVE_PROTOCOL_VERSION : 0;
   }
 
+  /**
+   * We've been in a group and have decryption keys, stays true through a `reinit`
+   */
   get ready(): boolean {
     return !!this.session && this.session.ready;
+  }
+
+  /**
+   * We have a key to encrypt with, set once a welcome/commit's transition executes
+   */
+  get canEncrypt(): boolean {
+    return !!this.session && this.session.canEncrypt;
+  }
+
+  /**
+   * The call is e2ee but we have no key yet, so nothing goes out
+   */
+  get awaitingKeys(): boolean {
+    return this.protocolVersion !== 0 && !this.canEncrypt;
   }
 
   get voicePrivacyCode(): null | string {
@@ -99,6 +128,10 @@ export class DaveSession extends EventSpewer {
     if (this.protocolVersion > 0) {
       if (this.session) {
         this.session.reinit(this.protocolVersion, this.userId, this.channelId);
+        if (this.downgraded) {
+          // upgrading from plaintext, others keep sending it until the upgrade's transition executes
+          this.session.setPassthroughMode(true);
+        }
       } else {
         this.session = new Davey.DAVESession(this.protocolVersion, this.userId, this.channelId);
       }
@@ -117,10 +150,26 @@ export class DaveSession extends EventSpewer {
   }
 
   /**
-   * Returns true if we need to send a transition ready
+   * From the gateway's prepare transition, returns true if we need to send a transition ready
    */
   prepareTransition(transitionId: number, protocolVersion: number): boolean {
+    try {
+      return this.prepareSessionTransition(transitionId, protocolVersion);
+    } catch(error) {
+      this.emit('warn', error);
+      this.recoverFromInvalidTransition(transitionId);
+      return false;
+    }
+  }
+
+  /**
+   * davey holds the transition until its execute, which switches the encryption key (transition id 0 right away)
+   */
+  protected prepareSessionTransition(transitionId: number, protocolVersion: number): boolean {
     this.pendingTransition = {protocolVersion, transitionId};
+    if (this.session) {
+      this.session.prepareTransition(transitionId, protocolVersion);
+    }
     // transition id 0 is a (re)initialization and can be executed immediately
     if (transitionId === 0) {
       this.executeTransition(transitionId);
@@ -133,6 +182,14 @@ export class DaveSession extends EventSpewer {
   }
 
   executeTransition(transitionId: number): boolean {
+    // davey already executed transition id 0 in its prepare, and tracks its own prepared transitions
+    if (this.session && transitionId !== 0) {
+      try {
+        this.session.executeTransition(transitionId);
+      } catch(error) {
+        this.emit('warn', error);
+      }
+    }
     if (!this.pendingTransition) {
       return false;
     }
@@ -145,7 +202,8 @@ export class DaveSession extends EventSpewer {
       } else if (transitionId > 0 && this.downgraded) {
         this.downgraded = false;
         if (this.session) {
-          this.session.setPassthroughMode(true, MediaDaveTransition.EXPIRY);
+          // back to e2ee, plaintext from others is only accepted for a bit longer
+          this.session.setPassthroughMode(false, MediaDaveTransition.EXPIRY);
         }
       }
       transitioned = true;
@@ -166,8 +224,7 @@ export class DaveSession extends EventSpewer {
   }
 
   /**
-   * Every invalid commit/welcome gets reported and a new key package sent, even mid reinit, otherwise a bad welcome
-   * after a reinit leaves us stuck. Decryption failures only call this when not already reinitializing
+   * Runs even mid reinit, otherwise a bad welcome after a reinit leaves us stuck
    */
   recoverFromInvalidTransition(transitionId: number): void {
     this.reinitializing = true;
@@ -175,7 +232,7 @@ export class DaveSession extends EventSpewer {
     this.invalidTransitions++;
     this.emit('invalidateTransition', transitionId);
     if (MediaDaveTransition.MAX_INVALID_TRANSITIONS <= this.invalidTransitions) {
-      // reinitializing again won't help, the owner reconnects with a fresh session instead
+      // reinitializing again won't help, the owner reconnects instead
       this.emit('invalidTransitionsExceeded', this.invalidTransitions);
       return;
     }
@@ -183,7 +240,7 @@ export class DaveSession extends EventSpewer {
   }
 
   /**
-   * Returns the commit (with the welcome appended, if any) to send back, if any
+   * Returns the commit (with the welcome appended, if any) to send back
    */
   processProposals(payload: Buffer, connectedUserIds: Iterable<string>): Buffer | null {
     if (!this.session) {
@@ -193,7 +250,7 @@ export class DaveSession extends EventSpewer {
     const { commit, welcome } = this.session.processProposals(
       operationType,
       payload.subarray(1),
-      Array.from(connectedUserIds),
+      this.recognizedUserIds(connectedUserIds),
     );
     if (!commit) {
       return null;
@@ -205,43 +262,58 @@ export class DaveSession extends EventSpewer {
     return this.processTransition(payload, (data) => this.session.processCommit(data));
   }
 
-  processWelcome(payload: Buffer): DaveTransitionResult {
-    return this.processTransition(payload, (data) => this.session.processWelcome(data));
+  /**
+   * Members of the welcomed group that aren't connected (or us) get the welcome rejected
+   */
+  processWelcome(payload: Buffer, connectedUserIds: Iterable<string>): DaveTransitionResult {
+    return this.processTransition(payload, (data) => {
+      this.session.processWelcome(data, this.recognizedUserIds(connectedUserIds));
+      return true;
+    });
   }
 
-  protected processTransition(payload: Buffer, process: (data: Buffer) => void): DaveTransitionResult {
+  /**
+   * `process` returns false if the commit/welcome was ignored
+   */
+  protected processTransition(payload: Buffer, process: (data: Buffer) => boolean): DaveTransitionResult {
     const transitionId = payload.readUInt16BE(0);
     if (!this.session) {
       throw new Error('No DAVE session to process the transition on');
     }
     try {
-      process(payload.subarray(2));
-      if (transitionId === 0) {
-        this.invalidTransitions = 0;
-        this.reinitializing = false;
-        this.lastTransitionId = transitionId;
-      } else {
-        this.pendingTransition = {protocolVersion: this.protocolVersion, transitionId};
+      if (!process(payload.subarray(2))) {
+        return {ignored: true, sendReady: false, success: true, transitionId};
       }
-      return {success: true, transitionId};
+      const sendReady = this.prepareSessionTransition(transitionId, this.protocolVersion);
+      return {ignored: false, sendReady, success: true, transitionId};
     } catch(error) {
       this.emit('warn', error);
       this.recoverFromInvalidTransition(transitionId);
-      return {success: false, transitionId};
+      return {ignored: false, sendReady: false, success: false, transitionId};
     }
   }
 
   /**
-   * Returns null if the packet must not be sent, the call is e2ee and we have no keys yet (before the welcome/commit)
+   * Everyone connected to the call, including us, since we're in the group too
+   */
+  protected recognizedUserIds(connectedUserIds: Iterable<string>): Array<string> {
+    const userIds = new Set(connectedUserIds);
+    userIds.add(this.userId);
+    return Array.from(userIds);
+  }
+
+  /**
+   * Returns null if the packet must not be sent, the call is e2ee and we have no keys yet
    */
   encrypt(packet: Buffer): Buffer | null {
-    // silence frames are never e2ee, libdave passes them through as well
-    if (this.protocolVersion === 0 || packet.equals(SilencePacket)) {
+    if (this.protocolVersion === 0) {
       return packet;
     }
-    if (!this.ready) {
+    // silence frames too, like libdave
+    if (!this.canEncrypt) {
       return null;
     }
+    // davey returns silence frames as is, receivers accept them either way (https://daveprotocol.com/#silence-packets)
     return this.session.encryptOpus(packet);
   }
 
@@ -278,14 +350,14 @@ export class DaveSession extends EventSpewer {
 
   /**
    * Video is encrypted per frame, before it's split into rtp packets (h264 as annex b)
-   * The codec matters, DAVE leaves the parts of a frame the sfu and decoders need to read (nal headers, frame tags) as is
+   * DAVE leaves the codec's nal headers and frame tags unencrypted for the sfu and decoders
    * Returns null if the frame must not be sent, like `encrypt()`
    */
   encryptVideo(frame: Buffer, codec: MediaCodecs | string): Buffer | null {
     if (this.protocolVersion === 0) {
       return frame;
     }
-    if (!this.ready) {
+    if (!this.canEncrypt) {
       return null;
     }
     let daveCodec = DaveCodecs.UNKNOWN;
@@ -298,8 +370,7 @@ export class DaveSession extends EventSpewer {
   }
 
   /**
-   * Video is encrypted per frame (before it's split into rtp packets), so this takes a whole reassembled frame
-   * Returns null if the frame couldn't be decrypted
+   * Takes a whole reassembled frame, returns null if it couldn't be decrypted
    */
   decryptVideo(frame: Buffer, userId: string): Buffer | null {
     const canDecrypt = this.ready && (this.protocolVersion !== 0 || this.session.canPassthrough(userId));
@@ -309,8 +380,7 @@ export class DaveSession extends EventSpewer {
     try {
       return this.session.decrypt(userId, DaveMediaTypes.VIDEO, frame);
     } catch(error) {
-      // unlike audio, these don't count towards recovering the session, we only see video from users we asked for
-      // and a codec quirk shouldn't be able to make us tear down the group
+      // unlike audio, these don't count towards recovering, a codec quirk shouldn't tear down the group
       return null;
     }
   }
@@ -329,6 +399,7 @@ export class DaveSession extends EventSpewer {
 
   on(event: string | symbol, listener: (...args: any[]) => void): this;
   on(event: 'invalidateTransition', listener: (transitionId: number) => any): this;
+  on(event: 'invalidTransitionsExceeded', listener: (invalidTransitions: number) => any): this;
   on(event: 'keyPackage', listener: (keyPackage: Buffer) => any): this;
   on(event: 'warn', listener: (error: Error) => any): this;
   on(event: string | symbol, listener: (...args: any[]) => void): this {

@@ -16,12 +16,11 @@ export interface RTPHeaderOptions {
   version?: number,
 }
 
-// `fromBuffer()` passes this instead of allocating options for every received packet, the buffer is swapped right after
+// `fromBuffer()` reuses this instead of allocating options per packet
 const FROM_BUFFER_OPTIONS: RTPHeaderOptions = Object.freeze({buffer: Buffer.alloc(0)});
 
 export class RTPHeader {
-  // a private field instead of a non-enumerable, non-writable `buffer` (`Object.defineProperty()` per packet is slow)
-  // it stays out of `Object.keys()`/JSON/inspect output and can't be reassigned, same as before
+  // a private field since `Object.defineProperty()` per packet is slow
   #buffer: Buffer;
   nonce?: Buffer;
   payload?: Buffer;
@@ -145,7 +144,7 @@ export class RTPHeader {
     this.setNonce(Math.round(Math.random() * MaxNumbers.UINT32));
   }
 
-  // the setters below change their bits in place, the other bits of the byte stay as they are
+  // the setters below only change their own bits of the byte
 
   setVersion(version: number): void {
     this.buffer[0] = (this.buffer[0] & 0x3F) | ((version & 0x03) << 6);
@@ -277,7 +276,7 @@ export class RTPHeader {
 }
 
 export class RTPNonce {
-  // see `RTPHeader`, a private field keeps `buffer` non-enumerable and read-only without a `defineProperty()` per instance
+  // see `RTPHeader`
   #buffer: Buffer;
 
   constructor(

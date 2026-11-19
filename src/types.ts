@@ -155,7 +155,7 @@ export namespace MediaGatewayPackets {
   }
 
   // `any` applies to every ssrc not listed, values are 0-100 (0 asks the server to stop forwarding that ssrc)
-  // `pixelCounts` is the size (width * height) we will show each wanted video ssrc at, the server uses it to pick a layer
+  // `pixelCounts` is the width * height we show each video ssrc at, the server uses it to pick a layer
   export interface MediaSinkWants {
     any?: number,
     pixelCounts?: {[ssrc: string]: number},

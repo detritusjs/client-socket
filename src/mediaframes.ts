@@ -3,19 +3,17 @@ import { MediaCodecs } from './constants';
 
 // how long an incomplete frame waits for its missing packets before we give up on it
 const FRAME_MAX_AGE = 1000;
-// incomplete frames we hold on to per stream, video at 30fps with a few frames of reordering fits easily
+// incomplete frames we hold on to per stream
 const FRAME_MAX_PENDING = 32;
 // complete frames stuck behind an incomplete one before we stop waiting for it, a third of a second at 30fps
 const FRAME_MAX_BLOCKED = 10;
-// how long missing packets get to show up once the sender has moved on to later frames (a nack and its retransmission
-// take about a round trip), longer is a loss
+// how long missing packets get once the sender has moved on to later frames, about a nack round trip
 const FRAME_REORDER_WAIT = 150;
 // annex b start code, what decoders (and DAVE's h264 handling) expect between nal units
 const H264_START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 // the short form, a 4 byte start code ends with it too
 const H264_START_CODE_SHORT = Buffer.from([0x00, 0x00, 0x01]);
-// packets further behind the stream than a gap (NACK_MAX_GAP) that keep coming for this long, with nothing newer in
-// between, are from a sender that restarted its sequence numbers, stale retransmissions and duplicates stop well before
+// packets more than NACK_MAX_GAP behind that keep coming this long mean the sender restarted its sequence numbers
 const SEQUENCE_RESTART_WAIT = 150;
 
 export enum H264NalTypes {
@@ -31,8 +29,7 @@ export enum H264NalTypes {
 
 
 export interface DepacketizedPayload {
-  // the packet's share of the frame, already in the form the frame is built from (annex b for h264), the frame is every
-  // packet's parts joined together
+  // the packet's share of the frame, annex b for h264
   parts: Array<Buffer>,
   // null when the packet doesn't say (only the first packet of a vp8/vp9 frame does), for h264 if it has an idr slice
   keyframe: boolean | null,
@@ -49,7 +46,7 @@ export interface AssembledFrame {
 }
 
 export interface AssemblerResult {
-  // in order, a packet can complete several frames at once when it was the one holding them back
+  // in order, a packet can complete several frames when it was holding them back
   frames: Array<AssembledFrame>,
   // a frame was lost (or we joined mid stream), the sender has to send a keyframe before we can decode again
   requestKeyframe: boolean,
@@ -281,7 +278,7 @@ export function depacketize(codec: MediaCodecs | string, payload: Buffer): Depac
 }
 
 
-// rtp payload budget per packet, leaves room for the rtp header, the auth tag and the nonce in a ~1200 byte udp packet
+// leaves room for the rtp header, auth tag and nonce in a ~1200 byte udp packet
 export const MAX_PAYLOAD_LENGTH = 1100;
 
 export interface PacketizeOptions {
@@ -408,10 +405,8 @@ export function packetize(codec: MediaCodecs | string, frame: Buffer, options: P
 
 /**
  * Puts one video stream's (ssrc's) rtp packets back together into frames
- * Packets of a frame share a timestamp and the last one has the marker bit set, a frame is complete once every
- * sequence number from its first packet to its marker packet is here. Frames come out in order, a complete frame waits
- * for older incomplete ones (packets get reordered) until they finish or are given up on.
- * After a loss, frames that depend on the lost one would only decode as garbage, so they're held back until a keyframe
+ * A frame is complete once every sequence number from its first packet to its marker packet is here.
+ * Frames come out in order, and after a loss they're held back until a keyframe
  */
 export class MediaFrameAssembler {
   codec: MediaCodecs;
@@ -587,7 +582,7 @@ export class MediaFrameAssembler {
       );
 
       if (oldest.assembled) {
-        // a whole frame can be late, we wouldn't know about it yet besides the sequence numbers it leaves free
+        // a whole frame can be late, only the sequence numbers it leaves free would tell us
         const gap = this.lastSequence !== null && this.hasGap(this.lastSequence, oldest.firstSequence);
         if (!gap || oldest.assembled.keyframe || overflowing || FRAME_REORDER_WAIT <= now - oldest.assembledAt) {
           this.emit(oldest, result);
@@ -677,8 +672,7 @@ export class MediaFrameAssembler {
           return false;
         }
       }
-      // and its first packets (like the sps and pps in front of a keyframe) aren't just running late, nothing that
-      // matters goes in front of an access unit delimiter or an sps
+      // and its first packets aren't just running late, nothing that matters goes before an AUD or an sps
       const nalTypes = pending.packets.get(sequence)!.payload.nalTypes;
       const nalType = (nalTypes && nalTypes.length) ? nalTypes[0] : 0;
       return nalType === H264NalTypes.AUD || nalType === H264NalTypes.SPS || FRAME_REORDER_WAIT <= now - pending.firstSeen;
@@ -809,7 +803,7 @@ export class MediaNackTracker {
 }
 
 
-// what we keep of each sent video packet to answer nacks with, a second at a few mbps is a few hundred packets
+// sent video packets kept to answer nacks, a second at a few mbps is a few hundred packets
 const HISTORY_MAX_AGE = 1000;
 const HISTORY_MAX_PACKETS = 1024;
 // a viewer nacking the same packet again before our retransmission could've reached it

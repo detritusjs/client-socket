@@ -48,7 +48,7 @@ const IP_DISCOVERY_INTERVAL = 1000;
 
 // 20ms of 48kHz opus, the rtp timestamp step for one audio frame
 const AUDIO_FRAME_SAMPLES = 960;
-// keeps the NAT mapping open while we aren't sending any audio (receive-only/idle), same as discord.js
+// keeps the NAT mapping open while we aren't sending audio
 const KEEPALIVE_INTERVAL = 5000;
 // while a video stream can't be decoded, how often we ask its sender for a keyframe
 const KEYFRAME_REQUEST_INTERVAL = 500;
@@ -56,12 +56,12 @@ const KEYFRAME_REQUEST_INTERVAL = 500;
 const RTCP_HEADER_LENGTH = 8;
 const KEEPALIVE_PACKET_LENGTH = 8;
 
-// `Object.values()` of a numeric enum also has the enum's names in it, keep the numbers in sets for the per packet lookups
+// `Object.values()` of a numeric enum includes its names too
 const RTCP_PACKET_TYPE_SET = new Set<number>((RTCP_PACKET_TYPES as ReadonlyArray<any>).filter((x) => typeof(x) === 'number'));
 const RTP_PAYLOAD_TYPE_SET = new Set<number>((RTP_PAYLOAD_TYPES as ReadonlyArray<any>).filter((x) => typeof(x) === 'number'));
 // we advertise each video codec's retransmission (rtx) payload type as its payload type + 1
 const RTP_RTX_PAYLOAD_TYPE_SET = new Set<number>([RTPPayloadTypes.VP8 + 1, RTPPayloadTypes.VP9 + 1, RTPPayloadTypes.H264 + 1]);
-// frames are sent every 20ms, most without options, don't allocate an empty object for each (the options are only read)
+// frames are sent every 20ms, don't allocate empty options for each
 const DEFAULT_FRAME_OPTIONS: FrameOptions = Object.freeze({});
 
 export interface FrameOptions {
@@ -92,7 +92,7 @@ export interface TransportPacket {
   format: MediaCodecTypes | null,
   from: UDPFrom,
   rtp?: RTPPayload,
-  // the stream the packet belongs to, there's a user id once discord tells us whose it is (SPEAKING)
+  // `userId` is set once discord tells us whose it is (SPEAKING)
   ssrc: number,
   userId: null | string,
 }
@@ -109,7 +109,7 @@ export interface MediaCodecDescription {
 
 export interface TransportFrame {
   codec: MediaCodecs,
-  // the encoded frame, e2e decrypted. h264 comes as annex b (start code prefixed nal units), ready for a decoder
+  // e2e decrypted, h264 comes as annex b
   data: Buffer,
   keyframe: boolean,
   ssrc: number,
@@ -142,7 +142,7 @@ export class Socket extends EventSpewer {
   pictureId: number = Math.floor(Math.random() * 0x7FFF);
   // the video codec we'd like to send, it goes first in the codecs we give the voice server
   preferredVideoCodec: MediaCodecs | null = null;
-  // the video packets we sent recently, to retransmit the ones viewers nack
+  // to retransmit the packets viewers nack
   sendHistory = new MediaPacketHistory();
   headers: {
     audio: RTPHeader,
@@ -187,7 +187,7 @@ export class Socket extends EventSpewer {
     // a keepalive alone shouldn't keep the process running
     this.keepAlive.interval.unref();
 
-    // opus is the only audio codec, the session description's `audio_codec` doesn't have to tell us
+    // opus is the only audio codec
     this.headers = {audio: new RTPHeader({payloadType: RTPPayloadTypes.OPUS, randomize: true})};
     this.nonce = new RTPNonce({randomize: true});
 
@@ -208,6 +208,14 @@ export class Socket extends EventSpewer {
       ip: null,
       port: null,
     };
+  }
+
+  /**
+   * IP discovery finished and the session description gave us a key, so frames can be sent
+   * `connected` only means the udp socket is open, the `ready` event only that ip discovery finished
+   */
+  get transportReady(): boolean {
+    return this.connected && !!this.key;
   }
 
   get audioSSRC(): number {
@@ -295,7 +303,7 @@ export class Socket extends EventSpewer {
       this.headers.video.setPayloadType(this.rtpVideoPayloadType!);
     }
     if (changed) {
-      // the codec everyone in the call can decode, video we send has to switch to it (SESSION_UPDATE changes it mid call)
+      // the codec everyone in the call can decode, video we send has to switch to it
       this.emit(SocketEvents.VIDEO_CODEC, codec);
     }
     return this;
@@ -342,7 +350,7 @@ export class Socket extends EventSpewer {
           }; break;
         }
         codecs.push({
-          // we pass encoded frames through, what we can send/receive is up to whoever makes or uses them
+          // we pass encoded frames through, decoding is up to whoever makes or uses them
           decode: true,
           encode: true,
           name: codec,
@@ -420,12 +428,12 @@ export class Socket extends EventSpewer {
     if (this.connected) {
       this.disconnect();
     }
-    // a key from a previous voice session would encrypt frames the new server can't decrypt, wait for its session description
+    // a previous session's key would encrypt frames the new server can't decrypt
     this.key = null;
 
     const socket = this.socket = dgram.createSocket('udp4');
     const ipDiscoveryInterval = new Timers.Interval();
-    // dgram emits events asynchronously, ignore anything from a socket we've already replaced/disconnected
+    // dgram emits asynchronously, ignore a socket we've already replaced/disconnected
     const onPacket = (packet: Buffer, from: UDPFrom) => {
       if (this.socket === socket) {
         this.onPacket(packet, from);
@@ -438,7 +446,7 @@ export class Socket extends EventSpewer {
       }
       // response: uint16 type (0x2) | uint16 length (70) | uint32 ssrc | 64 byte null-terminated address | uint16 port
       if (packet.length !== 74 || packet.readUInt16BE(0) !== 2) {
-        // rtp/rtcp packets can arrive before discovery finishes, only warn about packets that look like discovery responses
+        // rtp/rtcp packets can arrive before discovery finishes
         if (packet.length === 74) {
           this.emit(SocketEvents.WARN, new Error('Received an invalid ip discovery packet'));
         }
@@ -468,7 +476,8 @@ export class Socket extends EventSpewer {
         },
         protocol: MediaProtocols.UDP,
       });
-      this.mediaGateway.sendClientConnect();
+      // a new session knows nothing about our video, say it again
+      this.mediaGateway.sendClientConnect({videoActive: this.mediaGateway.videoActive});
 
       socket.on('message', onPacket);
       this.startKeepAlive();
@@ -480,7 +489,7 @@ export class Socket extends EventSpewer {
       ipDiscoveryInterval.stop();
       socket.removeListener('message', onIpDiscovery);
       socket.removeListener('message', onPacket);
-      // `close` fires asynchronously, after `disconnect()` and possibly after a new socket was created by `connect()`
+      // `close` fires asynchronously, possibly after `connect()` created a new socket
       if (this.socket === socket) {
         this.connected = false;
         this.socket = null;
@@ -561,14 +570,14 @@ export class Socket extends EventSpewer {
   }
 
   onPacket(packet: Buffer, from: UDPFrom): void {
-    // rtcp is feedback on what we send (nacks, keyframe requests), it matters even when we don't receive media
+    // rtcp (nacks, keyframe requests) matters even when we don't receive media
     if (!this.receiveEnabled && !RTCP_PACKET_TYPE_SET.has(packet[1])) {return;}
     if (from.address !== this.remote.ip || from.port !== this.remote.port) {
       this.emitPacketError(SocketEvents.WARN, 'Received a packet from an unknown IP/Port', from, packet);
       return;
     }
     if (packet.length === KEEPALIVE_PACKET_LENGTH) {
-      // the server echoes our keepalives back
+      // the server doesn't echo keepalives back, but nothing this size is ever rtp/rtcp either
       return;
     }
     if (!this.key) {
@@ -588,9 +597,9 @@ export class Socket extends EventSpewer {
     if (RTCP_PACKET_TYPE_SET.has(packetType)) {
       this.onRTCPPacket(packet, from);
     } else {
-      // read what we need from the bytes first, packets we drop never need the header object
+      // read the bytes first, packets we drop never need the header object
       let payloadType = packetType & 0x7F;
-      // a retransmission has its original packet's payload type + 1, it's unwrapped once decrypted
+      // a retransmission has its original payload type + 1, unwrapped once decrypted
       const isRetransmission = RTP_RTX_PAYLOAD_TYPE_SET.has(payloadType);
       if (isRetransmission) {
         payloadType--;
@@ -631,7 +640,7 @@ export class Socket extends EventSpewer {
         header: RTPHeader.fromBuffer(packet.subarray(0, 12)),
       };
 
-      // rtpsize modes: the header (including csrcs and the extension preamble) is unencrypted and used as the additional data
+      // rtpsize modes: the header (with csrcs and the extension preamble) is unencrypted, it's the additional data
       let headerLength = 12 + (rtp.header.csrcCount * 4);
       let extensionLength = 0;
       if (rtp.header.extension) {
@@ -670,8 +679,7 @@ export class Socket extends EventSpewer {
         return;
       }
       if (rtp.header.padding) {
-        // RFC3550 Section 5.1
-        // last byte contains amount of padding, including itself, slice that stuff off
+        // RFC3550 Section 5.1, the last byte is the padding length, including itself
         const padding = (end) ? data[end - 1] : 0;
         if (!padding || end - extensionLength < padding) {
           this.emitRTPError(SocketEvents.WARN, 'Received an rtp packet with invalid padding', from, packet, rtp);
@@ -714,7 +722,7 @@ export class Socket extends EventSpewer {
       }
 
       if (isRetransmission) {
-        // only goes into frames, the `packet` event stays the packets as they came in on their own ssrc
+        // only goes into frames, the `packet` event keeps packets as they came in
         this.onVideoPacket(codec!, ssrc, sequence, rtp.header.timestamp, !!rtp.header.marker, data, userId);
         return;
       }
@@ -764,7 +772,7 @@ export class Socket extends EventSpewer {
       this.frameAssemblers.set(ssrc, assembler);
     }
 
-    // ask for whatever went missing first, a retransmission is a lot quicker than a keyframe
+    // a retransmission is a lot quicker than a keyframe
     let tracker = this.nackTrackers.get(ssrc);
     if (!tracker) {
       tracker = new MediaNackTracker();
@@ -781,7 +789,12 @@ export class Socket extends EventSpewer {
     }
 
     const dave = this.mediaGateway.dave;
+    // if a keyframe didn't decrypt, the frames after it in this push are undecodable
+    let needsKeyframe = false;
     for (let frame of frames) {
+      if (needsKeyframe && !frame.keyframe) {
+        continue;
+      }
       let frameData: Buffer | null = frame.data;
       if (dave) {
         if (userId === null) {
@@ -793,11 +806,14 @@ export class Socket extends EventSpewer {
           this.emit(SocketEvents.LOG, new Error(`Video frame from ssrc ${ssrc} failed to e2e decrypt`));
           if (frame.keyframe) {
             // whatever comes next depends on this keyframe
-            assembler.waitingForKeyframe = true;
+            needsKeyframe = true;
             this.requestKeyframe(ssrc);
           }
           continue;
         }
+      }
+      if (frame.keyframe) {
+        needsKeyframe = false;
       }
 
       this.emit(SocketEvents.FRAME, {
@@ -808,6 +824,10 @@ export class Socket extends EventSpewer {
         timestamp: frame.timestamp,
         userId,
       } as TransportFrame);
+    }
+    if (needsKeyframe) {
+      // and so is everything the next pushes return, until a keyframe
+      assembler.waitingForKeyframe = true;
     }
   }
 
@@ -865,7 +885,7 @@ export class Socket extends EventSpewer {
     mediaSSRC: number,
     fci: Buffer = Buffer.alloc(0),
   ): void {
-    if (!this.connected || !this.key) {
+    if (!this.transportReady) {
       return;
     }
     const header = Buffer.alloc(RTCP_HEADER_LENGTH);
@@ -879,14 +899,13 @@ export class Socket extends EventSpewer {
     payload.writeUInt32BE(mediaSSRC >>> 0, 0);
     fci.copy(payload, 4);
 
-    // every packet we send is encrypted with the same key, they all take the next nonce from the one counter
     const nonce = this.nonce.set();
     this.send(RTPCrypto.encryptPacket(this.mode!, this.key!, header, payload, nonce));
   }
 
   /**
-   * rtpsize modes leave the first header and sender ssrc unencrypted, everything after it (other packets of a compound
-   * packet included) is encrypted like an rtp payload
+   * rtpsize modes leave the first header and sender ssrc unencrypted, the rest (compound packets included) is
+   * encrypted like an rtp payload
    */
   onRTCPPacket(packet: Buffer, from: UDPFrom): void {
     if (packet.length < RTCP_HEADER_LENGTH + RTP_NONCE_LENGTH) {
@@ -955,7 +974,7 @@ export class Socket extends EventSpewer {
           }
         }
         if (requested) {
-          // a viewer lost something or just started watching, only whoever encodes the video can make a keyframe
+          // only whoever encodes the video can make a keyframe
           this.emit(SocketEvents.KEYFRAME_REQUEST, {ssrc: videoSSRC});
         }
       }; break;
@@ -967,7 +986,7 @@ export class Socket extends EventSpewer {
    */
   retransmit(sequences: Array<number>): void {
     const header = this.headers.rtx;
-    if (!header || !this.connected || !this.key) {
+    if (!header || !this.transportReady) {
       return;
     }
     for (let sequence of sequences) {
@@ -980,7 +999,6 @@ export class Socket extends EventSpewer {
       header.setSequence();
       header.setTimestamp(packet.timestamp);
 
-      // the original sequence number goes in front of the original payload
       const payload = Buffer.allocUnsafe(2 + packet.payload.length);
       payload.writeUInt16BE(sequence, 0);
       packet.payload.copy(payload, 2);
@@ -1011,7 +1029,7 @@ export class Socket extends EventSpewer {
   }
 
   /**
-   * Only builds the error (and its stack trace) when something listens for it, dropped packets can come in at hundreds a second
+   * Only builds the error when something listens, dropped packets can come in at hundreds a second
    */
   emitRTPError(
     event: string,
@@ -1078,11 +1096,9 @@ export class Socket extends EventSpewer {
   }
 
   /**
-   * Sends one rtp payload you packetized yourself (codec payload descriptor included) on the video stream, the marker
-   * bit is whatever `headers.video` has. Without a `timestamp` the packet keeps the previous one's (same frame), give
-   * the first packet of every frame its 90kHz timestamp
-   * Not DAVE e2e encrypted: DAVE encrypts whole frames before they're split into packets, a single packet can't be.
-   * Viewers can't decrypt these while there's a DAVE session (protocol version above 0), send frames with `sendVideo()`
+   * Sends one rtp payload you packetized yourself on the video stream, the marker bit is whatever `headers.video` has
+   * Without a `timestamp` the packet keeps the previous one's, give the first packet of every frame its 90kHz timestamp
+   * Not DAVE e2e encrypted since DAVE encrypts whole frames, use `sendVideo()` while there's a DAVE session
    */
   sendVideoFrame(
     packet: Buffer,
@@ -1092,15 +1108,13 @@ export class Socket extends EventSpewer {
   }
 
   /**
-   * Sends a whole encoded video frame (vp8/vp9, or h264 as annex b): e2e encrypts it, splits it into rtp packets and
-   * sends them with the frame's timestamp, the marker bit on the last one. Pacing is up to the caller, this sends now
-   * Returns false if it couldn't be sent, viewers can't decrypt anything before we're in the DAVE group, so the frame
-   * gets dropped then. Nothing after a dropped frame decodes until the next keyframe, check `keyframe` to know
+   * Sends a whole encoded video frame (vp8/vp9, or h264 as annex b) right away, e2e encrypted and split into rtp packets
+   * Returns false if it was dropped (like before we're in the DAVE group), nothing after it decodes until a keyframe
    */
   sendVideo(
     frame: Buffer,
     options: {
-      // the codec the voice server picked (`codecs.video`) unless you know better
+      // defaults to the codec the voice server picked (`codecs.video`)
       codec?: MediaCodecs | string,
       // worked out from the frame when left out
       keyframe?: boolean,
@@ -1116,16 +1130,15 @@ export class Socket extends EventSpewer {
       throw new Error('No video codec yet, wait for the transport to be ready');
     }
     const header = this.headers.video!;
-    if (!this.connected || !this.key) {
+    if (!this.transportReady) {
       return false;
     }
     const dave = this.mediaGateway.dave;
-    if (dave && dave.protocolVersion !== 0 && !dave.ready) {
+    if (dave && dave.awaitingKeys) {
       return false;
     }
 
-    // only vp9's payload descriptor carries it, so skip scanning the frame for other codecs
-    // read from the unencrypted frame, before dave
+    // only vp9's payload descriptor carries it, read from the frame before dave
     const keyframe = (options.keyframe === undefined) ? (codec === MediaCodecs.VP9 && isKeyframe(codec, frame)) : options.keyframe;
     const data = (dave) ? dave.encryptVideo(frame, codec) : frame;
     if (!data) {
@@ -1137,7 +1150,6 @@ export class Socket extends EventSpewer {
 
     header.setPayloadType(RTPPayloadTypes[codec as keyof typeof RTPPayloadTypes]);
     for (let i = 0; i < packets.length; i++) {
-      // every packet of a frame shares its timestamp, the last one gets the marker bit
       header.setMarker(i === packets.length - 1);
       this._sendFrame(packets[i], MediaCodecTypes.VIDEO, {
         incrementSequence: true,
@@ -1164,8 +1176,8 @@ export class Socket extends EventSpewer {
     type: string,
     options: FrameOptions = DEFAULT_FRAME_OPTIONS,
   ): void {
-    // drop frames while (re)connecting, the key only arrives with the new session description
-    if (!this.connected || !this.key) {
+    // the key only arrives with the new session description
+    if (!this.transportReady) {
       return;
     }
 
@@ -1185,7 +1197,7 @@ export class Socket extends EventSpewer {
     if (dave && isAudio) {
       const encrypted = dave.encrypt(packet);
       if (!encrypted) {
-        // the e2ee session isn't ready, nobody could decrypt it. dropped before it uses up a sequence number
+        // nobody could decrypt it, dropped before it uses up a sequence number
         return;
       }
       packet = encrypted;
@@ -1196,13 +1208,13 @@ export class Socket extends EventSpewer {
     let timestamp = options.timestamp;
     let incrementTimestamp = options.incrementTimestamp;
     if (timestamp === undefined) {
-      // `setTimestamp(undefined)` picks a random timestamp, which breaks the receiver's jitter buffer
-      // audio advances by one frame, a video packet stays on the current frame (its packets share the timestamp)
+      // `setTimestamp(undefined)` would randomize it and break the receiver's jitter buffer
+      // audio advances by one frame, a video packet shares its frame's timestamp
       timestamp = (isAudio) ? AUDIO_FRAME_SAMPLES : 0;
       incrementTimestamp = true;
     }
 
-    // the stream's sequence/timestamp live in the cached header, `useCache: false` only sends them with a fresh header
+    // the stream's sequence/timestamp live in the cached header, even with `useCache: false`
     cachedHeader.setSequence(sequence, incrementSequence);
     cachedHeader.setTimestamp(timestamp, incrementTimestamp);
 
@@ -1229,7 +1241,7 @@ export class Socket extends EventSpewer {
     const nonce = this.nonce.set(options.nonce, options.incrementNonce);
 
     if (!isAudio) {
-      // kept for a second to answer nacks with, copied since callers are free to reuse their buffer
+      // copied since callers are free to reuse their buffer
       this.sendHistory.add(header.sequence, {
         marker: !!header.marker,
         payload: Buffer.from(packet),

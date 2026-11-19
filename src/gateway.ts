@@ -186,7 +186,7 @@ export class Socket extends EventSpewer {
     }
 
     Object.assign(this.identifyProperties, options.identifyProperties);
-    // discord dropped the `$` prefix, move the old keys over so they replace our defaults instead of being sent alongside them
+    // discord dropped the `$` prefix, so the old keys replace our defaults
     for (let key of ['browser', 'device', 'os']) {
       const properties = this.identifyProperties as any;
       if (properties[`$${key}`] !== undefined) {
@@ -213,7 +213,7 @@ export class Socket extends EventSpewer {
 
     // reserve a few of the 120 per minute for heartbeats and identify/resume, which skip the queue
     this.bucket = new Bucket(120, 60 * 1000, 5);
-    // regular sends wait for READY/RESUMED, sending anything before identifying gets the socket closed with 4003
+    // regular sends wait for READY/RESUMED, anything sent before identifying gets closed with 4003
     this.bucket.lock();
 
     this.decompressor = null;
@@ -317,7 +317,7 @@ export class Socket extends EventSpewer {
   makePresence(options: PresenceOptions = {}): RawPresence {
     const presence: PresenceOptions = Object.assign({}, defaultPresence, this.presence);
     if (options.activities !== undefined || options.activity !== undefined || options.game !== undefined) {
-      // new activities replace all of the old ones, otherwise an old `activity` would keep being sent alongside new `activities`
+      // new activities replace all of the old ones
       delete presence.activities;
       delete presence.activity;
       delete presence.game;
@@ -414,7 +414,6 @@ export class Socket extends EventSpewer {
       properties: this.identifyProperties,
       token: this.token,
     };
-    // only sent when set, so the default identify payload stays the same
     if (this.capabilities) {
       data.capabilities = this.capabilities;
     }
@@ -427,7 +426,7 @@ export class Socket extends EventSpewer {
     return data;
   }
 
-  // exponential backoff with some jitter, so a longer outage doesn't burn through `reconnectMax` in seconds
+  // exponential backoff with jitter, so a long outage doesn't burn through `reconnectMax` in seconds
   getReconnectDelay(): number {
     const delay = Math.min(this.reconnectDelay * (2 ** this.reconnects), Math.max(this.reconnectDelay, DEFAULT_RECONNECT_DELAY_MAX));
     return delay + Math.round(Math.random() * delay * 0.1);
@@ -493,7 +492,7 @@ export class Socket extends EventSpewer {
       this.disconnect(SocketInternalCloseCodes.RECONNECTING);
     }
 
-    // only resumes go to `resume_gateway_url`, keep `this.url` as the gateway url to identify on
+    // only resumes go to `resume_gateway_url`, `this.url` stays the url to identify on
     let isResumeUrl = false;
     if (!url) {
       if (this.resumeGatewayUrl) {
@@ -549,6 +548,11 @@ export class Socket extends EventSpewer {
           });
         }
       }
+      // `kill()` already settled the state
+      if (!this.killed) {
+        this.setState(SocketStates.CLOSED);
+      }
+      return;
     }
 
     this.setState(SocketStates.CONNECTING);
@@ -580,12 +584,16 @@ export class Socket extends EventSpewer {
     }
   }
 
+  /**
+   * Closes the socket. `1000` (the default) drops the session and doesn't reconnect,
+   * internal codes (`SocketInternalCloseCodes`) keep the session and reconnect to resume
+   */
   disconnect(
     code: number = SocketCloseCodes.NORMAL,
     reason?: string,
   ): void {
     this.cleanup(code, reason);
-    // internal disconnects use `SocketInternalCloseCodes` and still reconnect through `onClose`
+    // internal codes still reconnect through `onClose`
     if (!(code in SocketInternalCloseReasons)) {
       this._lastSocket = null;
       this._reconnectTimeout.stop();
@@ -613,8 +621,7 @@ export class Socket extends EventSpewer {
 
     switch (packet.op) {
       case GatewayOpCodes.HEARTBEAT: {
-        // discord asked for one, send it without clearing `ack`
-        // otherwise our interval firing before this one's ack comes back would see a zombie and reconnect
+        // don't clear `ack`, or our interval firing before this ack comes back would see a zombie
         this.heartbeat(false, true);
       }; break;
       case GatewayOpCodes.HEARTBEAT_ACK: {
@@ -640,7 +647,6 @@ export class Socket extends EventSpewer {
         }
       }; break;
       case GatewayOpCodes.INVALID_SESSION: {
-        // we can only resume if we have a session to resume
         const shouldResume = !!(packet.d as GatewayPackets.InvalidSession) && !!this.sessionId;
         if (!shouldResume) {
           this.sequence = 0;
@@ -672,7 +678,7 @@ export class Socket extends EventSpewer {
       }; break;
     }
 
-    // nothing listens for the raw packets most of the time, don't schedule anything for them
+    // nothing listens for raw packets most of the time
     if (this.hasEventListener(SocketEvents.PACKET)) {
       this._packetQueue.push(packet);
       if (!this._packetImmediate) {
@@ -686,7 +692,7 @@ export class Socket extends EventSpewer {
    */
   emitPackets(): void {
     const queue = this._packetQueue;
-    // packets queued while emitting wait for the next immediate, like they would with their own `setImmediate()`
+    // packets queued while emitting wait for the next immediate
     const end = queue.length;
     let i = 0;
     try {
@@ -694,7 +700,7 @@ export class Socket extends EventSpewer {
         this.emit(SocketEvents.PACKET, queue[i++]);
       }
     } finally {
-      // a throwing listener still surfaces as an uncaught exception, the rest of the packets go out on the next immediate
+      // a throwing listener still surfaces as uncaught, the rest go out on the next immediate
       if (i < queue.length) {
         queue.splice(0, i);
         this._packetImmediate = setImmediate(this.emitPackets);
@@ -749,7 +755,6 @@ export class Socket extends EventSpewer {
       case GatewayDispatchEvents.VOICE_STATE_UPDATE: {
         const userId = data['user_id'] as string;
         if (userId !== this.userId) {
-          // not our voice state update
           return;
         }
         const serverId = (data['guild_id'] || data['channel_id']) as string;
@@ -778,7 +783,7 @@ export class Socket extends EventSpewer {
       this._reconnectTimeout.stop();
       this.disconnect(SocketCloseCodes.NORMAL);
       if (this.decompressor) {
-        // frees the zlib stream, `cleanup` would otherwise re-create it when the socket closes
+        // frees the zlib stream, `cleanup` would otherwise re-create it
         this.decompressor.close();
         this.decompressor = null;
       }
@@ -811,7 +816,7 @@ export class Socket extends EventSpewer {
     const isCurrent = (this.socket === target || (!this.socket && this._lastSocket === target));
     this.emit(SocketEvents.CLOSE, {code, reason, stale: !isCurrent});
     if (this._resumeUrlSocket === target) {
-      // the resume node never said HELLO, keep the session but resume on the regular gateway url next
+      // the resume node never said HELLO, resume on the regular gateway url next
       this._resumeUrlSocket = null;
       this.resumeGatewayUrl = null;
     }
@@ -857,11 +862,11 @@ export class Socket extends EventSpewer {
       // the send limit is per connection
       this.bucket.reset();
       this.setState(SocketStates.OPEN);
-      // a node that opens but never sends HELLO would otherwise leave us waiting forever
+      // a node that opens but never sends HELLO would leave us waiting forever
       this._helloTimeout.start(DEFAULT_HELLO_TIMEOUT, () => {
         if (this.socket === target) {
           this.disconnect(SocketInternalCloseCodes.RECONNECTING);
-          // a stalled node won't answer our close frame either, don't wait out ws's close timeout before reconnecting
+          // a stalled node won't answer our close frame, don't wait out ws's close timeout
           target.terminate();
         }
       });
@@ -884,6 +889,17 @@ export class Socket extends EventSpewer {
     priority: boolean = false,
   ): void {
     const packet = {op, d};
+    // the callback always gets called once, with an error if the packet never went out
+    const drop = (error: Error) => {
+      if (callback) {
+        process.nextTick(callback, error);
+      }
+    };
+    if (this.killed) {
+      // the bucket stays locked after a kill, anything queued would sit there forever
+      drop(new DroppedPacketError(packet, 'Socket was killed'));
+      return;
+    }
 
     let data: any;
     try {
@@ -896,6 +912,7 @@ export class Socket extends EventSpewer {
       }
     } catch(error) {
       this.emit(SocketEvents.WARN, error);
+      drop(error as Error);
     }
     if (data !== undefined) {
       if (priority) {
@@ -903,25 +920,30 @@ export class Socket extends EventSpewer {
           if (this.connected && this.socket) {
             this.socket.send(data, callback);
           } else {
-            this.emit(SocketEvents.WARN, new DroppedPacketError(packet, 'Socket isn\'t connected'));
+            const error = new DroppedPacketError(packet, 'Socket isn\'t connected');
+            this.emit(SocketEvents.WARN, error);
+            drop(error);
           }
-        });
+        }, () => drop(new DroppedPacketError(packet, 'Connection closed before it was sent')));
       } else {
+        // the queue is cleared when the session can't be resumed or on a kill
+        const onDrop = () => drop(new DroppedPacketError(packet, 'Session ended before it was sent'));
         const throttled = () => {
           if (this.bucket.locked || !this.connected) {
             if (!this.bucket.locked) {
               this.bucket.lock();
             }
-            this.bucket.add(throttled, true);
+            this.bucket.add(throttled, true, onDrop);
           } else {
             try {
               (this.socket as BaseSocket).send(data, callback);
             } catch(error) {
               this.emit(SocketEvents.WARN, error);
+              drop(error as Error);
             }
           }
         }
-        this.bucket.add(throttled);
+        this.bucket.add(throttled, false, onDrop);
       }
     }
   }
@@ -962,16 +984,20 @@ export class Socket extends EventSpewer {
       return;
     }
 
+    const socket = this.socket;
     const data = this.getIdentifyData();
-    this.send(GatewayOpCodes.IDENTIFY, data, () => {
-      this.setState(SocketStates.IDENTIFYING);
+    this.send(GatewayOpCodes.IDENTIFY, data, (error?: Error) => {
+      // a reconnect may have replaced the socket by the time the write finishes
+      if (!error && this.socket === socket) {
+        this.setState(SocketStates.IDENTIFYING);
+      }
     }, true);
   }
 
   async identifyTry(): Promise<void> {
     const socket = this.socket;
     if (!this.onIdentifyCheck || (await Promise.resolve(this.onIdentifyCheck()))) {
-      // the check may be async, don't identify on a socket that replaced the one we checked for
+      // the check may be async, the socket may have been replaced
       if (this.socket === socket) {
         this.identify();
       }
@@ -980,9 +1006,12 @@ export class Socket extends EventSpewer {
 
   resume(): void {
     this.resuming = true;
+    const socket = this.socket;
     const data = this.getResumeData();
-    this.send(GatewayOpCodes.RESUME, data, () => {
-      this.setState(SocketStates.RESUMING);
+    this.send(GatewayOpCodes.RESUME, data, (error?: Error) => {
+      if (!error && this.socket === socket) {
+        this.setState(SocketStates.RESUMING);
+      }
     }, true);
   }
 
@@ -1258,6 +1287,10 @@ export class Socket extends EventSpewer {
       if (!channelId) {
         this.voiceStateUpdate(guildId, channelId, options);
         return null;
+      }
+      if (!this.userId) {
+        // the voice server would get `user_id: null` otherwise
+        throw new Error('Wait for the gateway to be ready before connecting to voice.');
       }
       gateway = new MediaSocket(this, {
         channelId,

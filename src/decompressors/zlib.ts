@@ -106,7 +106,7 @@ export class ZlibDecompressor extends EventSpewer {
 
         const inflate = this.inflate;
         this.flushCallback = (error: any) => {
-          // ignore a write from an inflate that was replaced by reset() while it was flushing
+          // ignore an inflate that reset() replaced while it was flushing
           if (inflate === this.inflate) {
             this.onFlush(error);
           }
@@ -144,7 +144,7 @@ export class ZlibDecompressor extends EventSpewer {
       case DependencyTypes.PAKO: {
         this.inflate.push(chunk, isEnd && Inflate.flushCode);
         if (isEnd) {
-          // pako 2.0.0 fricked things up, it ignores our flush code as well as broke our implementation
+          // pako 2.0.0 ignores our flush code
           if (this.inflate.err) {
             const error = new InflateError(this.inflate.msg, this.inflate.err);
             this.onError(error);
@@ -155,7 +155,7 @@ export class ZlibDecompressor extends EventSpewer {
       }; break;
       case DependencyTypes.ZLIB: {
         if (isEnd) {
-          // the inflate sync flushes every write, so once this write's callback fires all of the payload's data was emitted
+          // sync flush, so this write's callback fires after all of the payload's data was emitted
           this.flushing = true;
           this.inflate.write(chunk, this.flushCallback);
           return;
@@ -196,7 +196,7 @@ export class ZlibDecompressor extends EventSpewer {
         this.emit('data', chunk);
       }
     } finally {
-      // a throwing listener shouldn't leave us stuck as flushing, every later payload would just queue up
+      // a throwing listener shouldn't leave us stuck as flushing
       this.flushing = false;
       this.write();
     }

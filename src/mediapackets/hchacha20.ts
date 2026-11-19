@@ -23,8 +23,7 @@ function quarterRound(a: number, b: number, c: number, d: number): void {
 }
 
 /**
- * HChaCha20 (draft-irtf-cfrg-xchacha), turns a key and the first 16 bytes of an xchacha20 nonce into the key
- * that regular chacha20 is then used with. Node's crypto has chacha20-poly1305 but not this step
+ * HChaCha20 (draft-irtf-cfrg-xchacha), derives the chacha20 key from a key and the first 16 bytes of an xchacha20 nonce
  * Writes the 32 byte key into `output`
  */
 export function hchacha20(

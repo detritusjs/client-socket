@@ -16,7 +16,7 @@ const PCrypto: {
   ],
   using: null,
 };
-// order in preference, `aead_xchacha20_poly1305_rtpsize` uses one of these when installed and node's own chacha20 otherwise
+// in order of preference, node's own chacha20 is the fallback
 
 (async () => {
   for (let name of PCrypto.modules) {
@@ -29,7 +29,7 @@ const PCrypto: {
           }
         }; break;
       }
-      // only once it's usable, a module whose `ready` rejected would be picked otherwise
+      // only once it's usable, a module whose `ready` rejected shouldn't be picked
       PCrypto.available[name] = module;
       break;
     } catch(error) {
@@ -48,18 +48,18 @@ const NonceLengths: {[key: string]: number} = Object.freeze({
   [MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE]: 24,
 });
 
-// one zero-padded scratch nonce per mode, every encrypt/decrypt is synchronous so they can be reused for every packet
+// zero-padded scratch nonces, reusable since every encrypt/decrypt is synchronous
 const NonceBuffers: {[key: string]: Buffer} = {
   [MediaEncryptionModes.AEAD_AES256_GCM_RTPSIZE]: Buffer.alloc(NonceLengths[MediaEncryptionModes.AEAD_AES256_GCM_RTPSIZE]),
   [MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE]: Buffer.alloc(NonceLengths[MediaEncryptionModes.AEAD_XCHACHA20_POLY1305_RTPSIZE]),
 };
 
-// node has chacha20-poly1305 but not the xchacha20 variant discord uses, xchacha20 is chacha20 with a key derived per nonce
+// node lacks xchacha20, which is chacha20 with a key derived per nonce
 const CHACHA20_POLY1305 = 'chacha20-poly1305';
 const CHACHA20_NONCE_LENGTH = 12;
 const HAS_CHACHA20_POLY1305 = crypto.getCiphers().includes(CHACHA20_POLY1305);
 
-// scratch buffers like the nonces above, node copies the key and nonce when it creates the cipher
+// scratch buffers, node copies the key and nonce when it creates the cipher
 const XChaChaKey = Buffer.alloc(HCHACHA20_OUTPUT_LENGTH);
 const XChaChaNonce = Buffer.alloc(CHACHA20_NONCE_LENGTH);
 
@@ -102,7 +102,7 @@ export default {
   },
   /**
    * Encrypts `data` using `header` as the additional data
-   * Returns the ciphertext with the auth tag appended (the 4 byte nonce still has to be appended to the packet)
+   * Returns the ciphertext with the auth tag appended, without the 4 byte nonce
    */
   encrypt(
     mode: MediaEncryptionModes | string,
@@ -128,7 +128,6 @@ export default {
           };
           case CryptoModules.LIBSODIUM_WRAPPERS: {
             const packet: Uint8Array = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(data, header, null, fullNonce, key);
-            // wraps its memory instead of copying it
             return Buffer.from(packet.buffer, packet.byteOffset, packet.byteLength);
           };
         }
@@ -159,7 +158,7 @@ export default {
         const cipher = crypto.createCipheriv('aes-256-gcm', key, fullNonce);
         cipher.setAAD(header);
         const encrypted = cipher.update(data);
-        // gcm never has anything left over in final(), it's only needed for the auth tag
+        // final() is only needed for the auth tag
         cipher.final();
         const tag = cipher.getAuthTag();
 
@@ -176,7 +175,6 @@ export default {
           const encryptedLength = data.length + sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES;
           const packet = Buffer.allocUnsafe(header.length + encryptedLength + RTP_NONCE_LENGTH);
           header.copy(packet, 0);
-          // encrypt straight into the packet
           sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
             packet.subarray(header.length, header.length + encryptedLength),
             data,
@@ -189,12 +187,12 @@ export default {
           return packet;
         }
         if (!this.using && HAS_CHACHA20_POLY1305) {
-          // same as aes-256-gcm above, no intermediate ciphertext + tag buffer
+          // same as aes-256-gcm above
           prepareXChaCha(key, fullNonce);
           const cipher = crypto.createCipheriv(CHACHA20_POLY1305, XChaChaKey, XChaChaNonce, {authTagLength: AEAD_TAG_LENGTH});
           cipher.setAAD(header);
           const encrypted = cipher.update(data);
-          // a stream cipher never has anything left over in final(), it's only needed for the auth tag
+          // final() is only needed for the auth tag
           cipher.final();
           const tag = cipher.getAuthTag();
 
@@ -205,7 +203,7 @@ export default {
           nonce.copy(packet, offset, 0, RTP_NONCE_LENGTH);
           return packet;
         }
-        // libsodium-wrappers hands back its own memory, it's copied once into the packet
+        // libsodium-wrappers returns its own memory, so it's copied into the packet
         const encrypted = this.encrypt(mode, key, header, data, nonce);
         return Buffer.concat([header, encrypted, nonce.subarray(0, RTP_NONCE_LENGTH)]);
       };
@@ -234,7 +232,7 @@ export default {
           decipher.setAAD(header);
           decipher.setAuthTag(data.subarray(data.length - AEAD_TAG_LENGTH));
           const decrypted = decipher.update(data.subarray(0, data.length - AEAD_TAG_LENGTH));
-          // throws if the auth tag doesn't match, gcm never has anything left over in it
+          // throws if the auth tag doesn't match
           decipher.final();
           return decrypted;
         };
@@ -257,7 +255,7 @@ export default {
             decipher.setAAD(header);
             decipher.setAuthTag(data.subarray(data.length - AEAD_TAG_LENGTH));
             const decrypted = decipher.update(data.subarray(0, data.length - AEAD_TAG_LENGTH));
-            // throws if the auth tag doesn't match, a stream cipher never has anything left over in it
+            // throws if the auth tag doesn't match
             decipher.final();
             return decrypted;
           }

@@ -17,8 +17,7 @@ const ErrorCodes = Object.freeze({
 
 
 /**
- * `zstd-stream` keeps one zstd context for the whole connection,
- * every websocket message is one whole gateway payload (unlike zlib, there is no suffix to wait for)
+ * `zstd-stream` keeps one zstd context for the whole connection, every message is a whole payload
  */
 export class ZstdDecompressor extends EventSpewer {
   dataChunks: Array<Buffer> = [];
@@ -94,7 +93,7 @@ export class ZstdDecompressor extends EventSpewer {
 
     const chunk = this.chunks.shift()!;
 
-    // each message is a whole payload, the stream flushes every write so its callback means all of the payload's data was emitted
+    // every write is flushed, so its callback means all of the payload's data was emitted
     this.flushing = true;
     this.stream.write(chunk, this.flushCallback!);
   }
@@ -119,7 +118,7 @@ export class ZstdDecompressor extends EventSpewer {
         this.emit('data', chunk);
       }
     } finally {
-      // a throwing listener shouldn't leave us stuck as flushing, every later payload would just queue up
+      // a throwing listener shouldn't leave us stuck as flushing
       this.flushing = false;
       this.write();
     }

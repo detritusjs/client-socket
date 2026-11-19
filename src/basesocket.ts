@@ -7,7 +7,6 @@ import {
 } from './constants';
 
 
-// `ws` is a regular dependency, so it's always installed
 const WebSocket = require('ws');
 
 
@@ -29,7 +28,7 @@ export class BaseSocket extends EventSpewer {
   ) {
     super();
 
-    // a node that accepts the connection but never answers the upgrade would otherwise leave us connecting forever
+    // a node that never answers the upgrade would leave us connecting forever
     this.socket = new WebSocket(url, {handshakeTimeout});
     this.socket.on(SocketEventsBase.CLOSE, this.onClose.bind(this));
     this.socket.on(SocketEventsBase.PONG, this.onPong.bind(this));
@@ -60,9 +59,14 @@ export class BaseSocket extends EventSpewer {
     return DependencyTypes.WS;
   }
 
+  /**
+   * The callback always gets called once, with an error if the data wasn't sent
+   */
   send(data: any, callback?: Function): void {
     if (this.connected) {
       this.socket.send(data, {}, callback);
+    } else if (callback) {
+      process.nextTick(callback, new Error('Socket isn\'t connected'));
     }
   }
 
@@ -101,7 +105,7 @@ export class BaseSocket extends EventSpewer {
         this.pings.delete(nonce);
       }
     } catch(e) {
-      // malformed ping?
+      // malformed pong
     }
     this.emit(SocketEventsBase.PONG, data);
   }

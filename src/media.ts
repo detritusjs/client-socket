@@ -22,7 +22,7 @@ import {
   MEDIA_ENCRYPTION_MODES,
   MEDIA_PROTOCOLS,
 } from './constants';
-import { SocketKillError } from './errors';
+import { DroppedPacketError, SocketKillError } from './errors';
 import { Socket as GatewaySocket } from './gateway';
 import { DaveSession } from './mediadave';
 import { Socket as MediaUDPSocket } from './mediaudp';
@@ -39,9 +39,8 @@ export interface VideoStreamSettings {
 }
 
 /**
- * Everything a voice connection uses from the main gateway, `Gateway.Socket` is one. A process without the main gateway
- * (a separate voice node) passes its own: the session and user ids the voice server checks, the reconnect settings, and
- * `voiceStateUpdate()` for leaving or asking for a new voice server, which it can forward to whoever owns the gateway
+ * Everything a voice connection uses from the main gateway, `Gateway.Socket` is one
+ * A separate voice node passes its own, its `voiceStateUpdate()` can forward to whoever owns the gateway
  */
 export interface GatewayLike {
   autoReconnect: boolean,
@@ -77,7 +76,7 @@ const NEW_SERVER_TIMEOUT = 15 * 1000;
 // how long wants changes are collected before they are sent
 const MEDIA_SINK_WANTS_DELAY = 100;
 
-// discord's client only resumes if its last heartbeat ack is this recent, an older session gets identified again
+// discord's client only resumes if its last heartbeat ack is this recent
 const RESUME_MAX_AGE = 60 * 1000;
 
 function clampWants(value: number): number {
@@ -117,21 +116,21 @@ export class Socket extends EventSpewer {
   ipDiscoveryFailures: number = 0;
   // kept across disconnects (unlike `_heartbeat.lastAck`) to decide if the session is still resumable
   lastHeartbeatAckAt: null | number = null;
-  // how often the server wants a video keyframe from us, as it sent it. null until it does
+  // how often the server wants a video keyframe from us, null until it says
   keyframeInterval: number | null = null;
   killed: boolean = false;
-  // waiting on the voice server discord gives us after the last one stopped answering, see `requestNewServer()`
+  // waiting on a new voice server, see `requestNewServer()`
   newServerTimeout = new Timers.Timeout();
   promises = new Set<{reject: Function, resolve: Function}>();
   protocol: MediaProtocols | null = null;
   ready: boolean = false;
   receiveEnabled: boolean = false;
   reconnects: number = 0;
-  // what the receivers of our video last asked for, keyed by our own stream ssrcs. null until the server sends it
+  // what the receivers of our video last asked for, keyed by our own stream ssrcs
   remoteMediaSinkWants: MediaGatewayPackets.MediaSinkWants | null = null;
   // the wants the server last got from us this session, null while it is still on its defaults
   sentMediaSinkWants: string | null = null;
-  // collects wants changes made right after each other into one packet, see `scheduleMediaSinkWants()`
+  // batches wants changes into one packet, see `scheduleMediaSinkWants()`
   mediaSinkWantsTimeout = new Timers.Timeout();
   // whether we asked discord for a new voice server since we last connected to one
   requestedNewServer: boolean = false;
@@ -153,9 +152,10 @@ export class Socket extends EventSpewer {
   rtxSSRCs = new Map<number, number>();
   // our own video streams, as assigned by the server in READY
   streams: Array<MediaGatewayPackets.Stream> = [];
-  // other users' video streams (one per simulcast layer) as they last announced them, with their bitrate/framerate/resolution
+  // other users' video streams (one per simulcast layer) as they last announced them
   userStreams = new Map<string, Array<MediaGatewayPackets.Stream>>();
-  // what we last said about our own video in `sendClientConnect`
+  // what we last said about our video in `sendClientConnect`, said again when the transport reconnects
+  videoActive: boolean = false;
   videoStreamSettings: VideoStreamSettings = {};
   transport: MediaUDPSocket | null = null;
   token: null | string = null;
@@ -163,7 +163,7 @@ export class Socket extends EventSpewer {
   // per user override of `defaultWants`, 0 stops the server from forwarding that user to us
   userWants = new Map<string, number>();
   videoEnabled: boolean;
-  // versions of the voice server we are connected to, asked for after READY
+  // asked for after READY
   voiceBackendVersion: {rtcWorker: string, voice: string} | null = null;
 
   constructor(
@@ -231,6 +231,14 @@ export class Socket extends EventSpewer {
     return this.gateway.sessionId;
   }
 
+  /**
+   * The udp transport has its key and audio can be sent, unlike `state` being READY
+   * An e2ee call still drops frames until `dave.canEncrypt`
+   */
+  get transportReady(): boolean {
+    return !!this.transport && this.transport.transportReady;
+  }
+
   get audioSSRC(): number {
     return (this.transport) ? this.transport.ssrc : 0;
   }
@@ -275,15 +283,20 @@ export class Socket extends EventSpewer {
   }
 
   setEndpoint(value: null | string): void {
-    // keep the port, each port on a voice host is a different server and the others don't know our session (4006)
-    this.endpoint = (value) ? `wss://${value}` : null;
+    // keep the port, each port on a voice host is a different server that doesn't know our session (4006)
+    const endpoint = (value) ? `wss://${value}` : null;
+    if (endpoint && endpoint !== this.endpoint) {
+      // a different voice server gets its own ip discovery attempts
+      this.ipDiscoveryFailures = 0;
+    }
+    this.endpoint = endpoint;
     this.identified = false;
     if (!this.endpoint) {
-      // discord is reallocating the voice server, wait for the next VOICE_SERVER_UPDATE with an endpoint
+      // discord is reallocating the voice server
       this.disconnect();
       this.waitForNewServer('Voice server was taken away');
     } else if (this.connected) {
-      // a `setToken()` call usually follows, only connect if it didn't so we don't open two sockets
+      // a `setToken()` call usually follows, only connect if it didn't
       this.disconnect();
       process.nextTick(() => {
         if (this.killed || !this.endpoint || this.socket) {
@@ -394,7 +407,7 @@ export class Socket extends EventSpewer {
       case SocketMediaCloseCodes.BAD_REQUEST:
       case SocketMediaCloseCodes.RATE_LIMITED:
       case SocketMediaCloseCodes.CALL_TERMINATED:
-      // the session died with the server, discord's client identifies again instead of resuming
+      // the session died with the server, discord's client identifies again
       case SocketMediaCloseCodes.VOICE_SERVER_CRASHED: {
         this.identified = false;
       }; break;
@@ -416,7 +429,7 @@ export class Socket extends EventSpewer {
    */
   resetSession(): void {
     this.identified = false;
-    // everything queued was meant for the old session (its ssrcs, its dave transitions)
+    // everything queued was meant for the old session
     this.bucket.clear();
     this.sequence = -1;
     this.connectedUserIds.clear();
@@ -430,8 +443,7 @@ export class Socket extends EventSpewer {
     this.voiceBackendVersion = null;
     this.destroyDave();
     if (this.transport) {
-      // its key belongs to the old session, without dave it would send plain opus in an e2ee call until the next
-      // session description. READY connects it again
+      // its key belongs to the old session and would send plain opus in an e2ee call, READY connects it again
       this.transport.disconnect();
     }
   }
@@ -458,7 +470,7 @@ export class Socket extends EventSpewer {
     this.setState(SocketStates.CONNECTING);
     this.emit(SocketEvents.SOCKET, ws);
     ws.socket.onclose = this.onClose.bind(this, ws);
-    // BaseSocket re-emits the websocket's errors, it throws if there is no listener
+    // BaseSocket re-emits errors, which throws without a listener
     ws.on(SocketEventsBase.ERROR, this.onError.bind(this, ws));
     ws.socket.onmessage = this.onMessage.bind(this, ws);
     ws.socket.onopen = this.onOpen.bind(this, ws);
@@ -519,6 +531,10 @@ export class Socket extends EventSpewer {
         this.bucket.unlock();
         this.streams = (data.streams) ? data.streams.filter((x) => x.type !== MediaStreamTypes.AUDIO) : [];
         this.transportConnect(data);
+        if (this.killed) {
+          // no encryption mode we can use
+          return;
+        }
         this.sentMediaSinkWants = null;
         this.syncMediaSinkWants();
         if (6 <= this.serverVersion) {
@@ -533,15 +549,13 @@ export class Socket extends EventSpewer {
         this.requestedNewServer = false;
         Object.defineProperty(this, 'ready', {value: true});
         this.bucket.unlock();
-        // sent again in case the server did not keep our wants across the resume
+        // in case the server didn't keep our wants across the resume
         this.syncMediaSinkWants(true);
         this.setState(SocketStates.READY);
         this.emit(SocketEvents.READY);
-        // a resume keeps the udp transport and its key and gets no new session description, so this is the only
-        // signal that audio can be sent again. We only resume with a key, losing it since means the transport reconnected
-        const transport = this.transport;
-        if (transport && transport.connected && transport.key) {
-          this.emit(SocketEvents.TRANSPORT_READY, transport);
+        // a resume keeps the transport and its key, so this is the only signal that audio can be sent again
+        if (this.transportReady) {
+          this.emit(SocketEvents.TRANSPORT_READY, this.transport);
         }
       }; break;
       case MediaOpCodes.CLIENTS_CONNECT: {
@@ -557,7 +571,7 @@ export class Socket extends EventSpewer {
         if (data.audio_ssrc) {
           this.ssrcs[MediaSSRCTypes.AUDIO].set(data.audio_ssrc, data.user_id);
         }
-        // sent again whenever the user's video starts or stops, a video_ssrc of 0 means it stopped
+        // sent again whenever the user's video starts or stops, video_ssrc 0 means it stopped
         for (let [ssrc, userId] of this.ssrcs[MediaSSRCTypes.VIDEO]) {
           if (userId === data.user_id) {
             this.ssrcs[MediaSSRCTypes.VIDEO].delete(ssrc);
@@ -636,7 +650,6 @@ export class Socket extends EventSpewer {
         this.lastHeartbeatAckAt = this._heartbeat.lastAck;
       }; break;
       case MediaOpCodes.HEARTBEAT: {
-        // the server asking for one right away
         this.heartbeat();
       }; break;
       case MediaOpCodes.SELECT_PROTOCOL_ACK: {
@@ -681,7 +694,7 @@ export class Socket extends EventSpewer {
             // a half setup session would e2e encrypt with the wrong state
             this.destroyDave();
             if (daveProtocolVersion) {
-              // the call is e2ee, we can't send or receive anything without dave
+              // the call is e2ee, nothing works without dave
               this.kill(new Error(`Failed to setup the DAVE protocol (E2EE): ${(error as any)?.message || error}`));
               return;
             }
@@ -715,7 +728,6 @@ export class Socket extends EventSpewer {
           .setTransportId(mediaSessionId);
 
         if (videoQualityChanges) {
-          // the quality we now get of someone's video changed
           for (let change of videoQualityChanges) {
             this.emit(SocketEvents.VIDEO_QUALITY, {quality: change.quality, ssrc: change.ssrc, userId: change.user_id});
           }
@@ -803,14 +815,14 @@ export class Socket extends EventSpewer {
           }
         }; break;
         case MediaOpCodes.DAVE_MLS_ANNOUNCE_COMMIT_TRANSITION: {
-          const { success, transitionId } = dave.processCommit(payload);
-          if (success && transitionId !== 0) {
+          const { sendReady, transitionId } = dave.processCommit(payload);
+          if (sendReady) {
             this.sendDaveTransitionReady(transitionId);
           }
         }; break;
         case MediaOpCodes.DAVE_MLS_WELCOME: {
-          const { success, transitionId } = dave.processWelcome(payload);
-          if (success && transitionId !== 0) {
+          const { sendReady, transitionId } = dave.processWelcome(payload, this.connectedUserIds);
+          if (sendReady) {
             this.sendDaveTransitionReady(transitionId);
           }
         }; break;
@@ -855,9 +867,8 @@ export class Socket extends EventSpewer {
   }
 
   /**
-   * The voice server stopped answering, asks discord for another one by sending our voice state again (same channel,
-   * nothing about it changes). The VOICE_SERVER_UPDATE it answers with connects us there through `setEndpoint()` and
-   * `setToken()`, the transport comes back with a TRANSPORT_READY. Once per server, if the new one fails too we die
+   * The voice server stopped answering, asks discord for another one by sending our voice state again
+   * Once per server, if the new one fails too we die
    */
   requestNewServer(): void {
     this.requestedNewServer = true;
@@ -886,7 +897,7 @@ export class Socket extends EventSpewer {
     options: {voiceStateUpdate?: boolean} = {},
   ): void {
     if (this.killed) {return;}
-    // `voiceStateUpdate: false` when another session of ours took over this voice connection, leaving the channel would disconnect that session
+    // `voiceStateUpdate: false` when another session of ours took over, leaving would disconnect it
     if (options.voiceStateUpdate !== false) {
       const serverId = (this.inDm) ? null : this.serverId;
       this.gateway.voiceStateUpdate(serverId, null);
@@ -942,19 +953,17 @@ export class Socket extends EventSpewer {
         };
         case SocketMediaCloseCodes.SESSION_NO_LONGER_VALID: {
           if (resuming) {
-            // the server only dropped the session we tried to resume, `cleanup()` reset it so the reconnect identifies
+            // the server only dropped the session we tried to resume, the reconnect identifies
             break;
           }
-          // our session isn't in this voice channel anymore, usually another session of ours joined voice
-          // so don't send a voice state update, it would disconnect that session
+          // usually another session of ours joined voice, a voice state update would disconnect it
           this.kill(new SocketKillError(code, reason), {voiceStateUpdate: false});
           return;
         };
         case SocketMediaCloseCodes.DISCONNECTED:
         case SocketMediaCloseCodes.RATE_LIMITED:
         case SocketMediaCloseCodes.CALL_TERMINATED: {
-          // should not reconnect, the main gateway will either send a new VOICE_SERVER_UPDATE (reconnects) or a VOICE_STATE_UPDATE (kills)
-          // if it sends neither we would sit here forever
+          // wait for the main gateway's VOICE_SERVER_UPDATE (reconnects) or VOICE_STATE_UPDATE (kills)
           this.waitForNewServer(`Voice socket closed with ${code}`);
           return;
         };
@@ -968,7 +977,7 @@ export class Socket extends EventSpewer {
           }
         } else {
           this.emit(SocketEvents.RECONNECTING);
-          // doubles with each reconnect in a row, the jitter keeps every voice connection of a dead server from coming back at once
+          // the jitter keeps every voice connection of a dead server from coming back at once
           const reconnectDelay = this.gateway.reconnectDelay;
           const delay = Math.min(reconnectDelay * (2 ** this.reconnects), Math.max(reconnectDelay, DEFAULT_RECONNECT_DELAY_MAX));
           setTimeout(() => {
@@ -1023,16 +1032,16 @@ export class Socket extends EventSpewer {
           return;
         }
         this.emit(SocketEvents.WARN, new Error(`Voice server sent no HELLO within ${DEFAULT_HELLO_TIMEOUT}ms, reconnecting`));
-        // a stalled server won't answer a close frame either, the close event (1006) runs the reconnect right away
+        // a stalled server won't answer a close frame, the close event (1006) reconnects right away
         target.terminate();
       });
       if (this.identified) {
         const lastAckAt = this.lastHeartbeatAckAt;
         if (lastAckAt === null || RESUME_MAX_AGE < Date.now() - lastAckAt) {
-          // too long since the server last answered, it has likely dropped the session and would close with 4006
+          // the server has likely dropped the session and would close with 4006
           this.resetSession();
         } else if (!this.transport || !this.transport.key) {
-          // ip discovery or SELECT_PROTOCOL never finished, a resume gets no session description so we'd never get a key
+          // a resume gets no session description, so we'd never get a key
           this.resetSession();
         }
       }
@@ -1053,39 +1062,54 @@ export class Socket extends EventSpewer {
     return this.socket!.ping(timeout);
   }
 
+  /**
+   * The callback always gets called once, with an error if the packet never went out
+   * Packets sent while disconnected are dropped, not queued
+   */
   send(
     op: number,
     d: any,
     callback?: Function,
     direct: boolean = false,
   ): void {
+    const packet = {op, d};
+    const drop = (error: Error) => {
+      if (callback) {
+        process.nextTick(callback, error);
+      }
+    };
     if (!this.connected) {
+      drop(new DroppedPacketError(packet, 'Socket isn\'t connected'));
       return;
     }
 
-    const data = this.encode({op, d});
+    const data = this.encode(packet);
     if (!data) {
+      drop(new DroppedPacketError(packet, 'Couldn\'t encode it'));
       return;
     }
 
     if (direct) {
       this.socket!.send(data, callback);
     } else {
+      // `resetSession()` clears the queue, it was meant for the old session
+      const onDrop = () => drop(new DroppedPacketError(packet, 'Session ended before it was sent'));
       const throttled = () => {
         if (this.bucket.locked || !this.identified || !this.connected) {
           if (!this.bucket.locked) {
             this.bucket.lock();
           }
-          this.bucket.add(throttled, true);
+          this.bucket.add(throttled, true, onDrop);
           return;
         }
         try {
           this.socket!.send(data, callback);
         } catch(error) {
           this.emit(SocketEvents.WARN, error);
+          drop(error as Error);
         }
       };
-      this.bucket.add(throttled);
+      this.bucket.add(throttled, false, onDrop);
     }
   }
 
@@ -1095,6 +1119,9 @@ export class Socket extends EventSpewer {
     callback?: Function,
   ): void {
     if (!this.connected) {
+      if (callback) {
+        process.nextTick(callback, new DroppedPacketError({op}, 'Socket isn\'t connected'));
+      }
       return;
     }
     // client binary messages: uint8 opcode | payload
@@ -1142,6 +1169,8 @@ export class Socket extends EventSpewer {
       return;
     }
 
+    // a reconnect may have replaced the socket by the time the write finishes
+    const socket = this.socket;
     this.send(MediaOpCodes.IDENTIFY, {
       channel_id: this.channelId,
       max_dave_protocol_version: DaveSession.maxProtocolVersion,
@@ -1152,20 +1181,25 @@ export class Socket extends EventSpewer {
       video: this.videoEnabled,
       // asks the server to assign ssrcs for one full quality video layer, returned in READY
       streams: (this.videoEnabled) ? [{type: MediaStreamTypes.VIDEO, rid: '100', quality: 100}] : [],
-    }, () => {
-      this.setState(SocketStates.IDENTIFYING);
+    }, (error?: Error) => {
+      if (!error && this.socket === socket) {
+        this.setState(SocketStates.IDENTIFYING);
+      }
     }, true);
   }
 
   resume(): void {
+    const socket = this.socket;
     this.send(MediaOpCodes.RESUME, {
       channel_id: this.channelId,
       seq_ack: this.sequence,
       server_id: this.serverId,
       session_id: this.sessionId,
       token: this.token,
-    }, () => {
-      this.setState(SocketStates.RESUMING);
+    }, (error?: Error) => {
+      if (!error && this.socket === socket) {
+        this.setState(SocketStates.RESUMING);
+      }
     }, true);
   }
 
@@ -1210,9 +1244,8 @@ export class Socket extends EventSpewer {
         transport.connect(data.ip, data.port);
         this.emit(SocketEvents.TRANSPORT, transport);
       } else {
-        transport.disconnect();
-        this.transport = null;
-        this.emit(SocketEvents.WARN, new Error(`No supported voice mode found in ${JSON.stringify(data.modes)}`));
+        // every reconnect would get the same modes, and staying READY without a transport would hang
+        this.kill(new Error(`No supported voice mode found in ${JSON.stringify(data.modes)}`));
       }
     } else {
       this.emit(SocketEvents.WARN, new Error(`Unsupported Media Transport Protocol: ${this.protocol}`));
@@ -1221,7 +1254,7 @@ export class Socket extends EventSpewer {
 
   /**
    * Tells the voice server (and through it everyone in the call) our ssrcs and if we're sending video
-   * The bitrate/framerate/resolution describe that video, they're kept for the next call so only `videoActive` is needed after
+   * The video settings are kept, so later calls only need `videoActive`
    */
   sendClientConnect(
     options: {videoActive?: boolean} & VideoStreamSettings = {},
@@ -1236,6 +1269,7 @@ export class Socket extends EventSpewer {
     if (options.maxResolution !== undefined) {
       this.videoStreamSettings.maxResolution = options.maxResolution;
     }
+    this.videoActive = !!options.videoActive;
 
     const streams: Array<MediaGatewayPackets.Stream> = [];
     if (this.videoEnabled) {

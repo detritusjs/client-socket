@@ -1,5 +1,4 @@
-// package.json is in every published package and sits one folder up from both src/ and lib/, `require` keeps tsc
-// from pulling it into the build (it's outside rootDir)
+// `require` keeps tsc from pulling package.json (outside rootDir) into the build
 const { version } = require('../package.json') as {version: string};
 
 export const Package = Object.freeze({
@@ -190,8 +189,7 @@ export enum GatewayDispatchEvents {
   WEBHOOKS_UPDATE = 'WEBHOOKS_UPDATE'
 }
 
-// sent in identify's `capabilities` bitfield, changes how the gateway behaves/shapes its payloads (intents pick which events we get)
-// only `CHANNEL_OBFUSCATION` is documented (and is a temporary testing opt-in for bots), the rest are what discord's own clients send and mostly reshape the user account READY payload
+// identify's `capabilities`, only `CHANNEL_OBFUSCATION` is documented, the rest are what discord's own clients send
 // bits 17, 19, and 20 are also sent by the official client but are unknown
 export enum GatewayCapabilities {
   LAZY_USER_NOTES = 1 << 0,
@@ -418,7 +416,7 @@ export const MediaDaveTransition = Object.freeze({
   EXPIRY_PENDING_DOWNGRADE: 24,
   // consecutive decryption failures before we try to recover
   FAILURE_TOLERANCE: 36,
-  // consecutive invalid commits/welcomes before we give up on the session and reconnect, like discord's client
+  // consecutive invalid commits/welcomes before we reconnect, like discord's client
   MAX_INVALID_TRANSITIONS: 5,
 });
 
@@ -506,7 +504,7 @@ export enum MediaSSRCTypes {
   VIDEO = 'video',
 }
 
-// mirrors of @snazzah/davey's enums, they're `const enum`s so the module has no runtime objects for them
+// mirrors of @snazzah/davey's `const enum`s, which have no runtime objects
 export enum DaveMediaTypes {
   AUDIO = 0,
   VIDEO = 1,
@@ -646,6 +644,17 @@ export enum SocketMediaCloseCodes {
   RESET_BACKOFF = 4802,
 }
 
+/**
+ * The connection state of a gateway or voice gateway socket, emitted as `state`
+ * - `CLOSED` no socket. Never connected, waiting out a reconnect backoff, waiting for a new voice server,
+ *   or dead for good, check `killed` to tell the last one apart
+ * - `CONNECTING` the websocket handshake is in progress
+ * - `OPEN` the websocket is open, waiting for HELLO or for `onIdentifyCheck` to allow identifying
+ * - `IDENTIFYING`/`RESUMING` IDENTIFY/RESUME was sent, waiting for READY/RESUMED
+ * - `READY` the session is up. For voice that doesn't mean audio can be sent yet, wait for `transportReady`
+ *
+ * Values cross process boundaries (clustering), so members are never renamed or inserted
+ */
 export enum SocketStates {
   CLOSED = 'CLOSED',
   CONNECTING = 'CONNECTING',

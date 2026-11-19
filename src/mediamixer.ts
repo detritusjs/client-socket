@@ -30,7 +30,7 @@ function pcmToInt16Array(pcm: Buffer, length: number): Int16Array {
     if (!(pcm.byteOffset % BYTE_DEPTH)) {
       return new Int16Array(pcm.buffer, pcm.byteOffset, length);
     }
-    // an Int16Array view has to start on a 2-byte boundary, copy the bytes into an aligned one
+    // an Int16Array view has to start on a 2-byte boundary
     const samples = new Int16Array(length);
     new Uint8Array(samples.buffer).set(pcm.subarray(0, length * BYTE_DEPTH));
     return samples;
@@ -231,10 +231,10 @@ export class AudioMixer extends EventSpewer {
         // a reordered straggler, its slot was already emitted
         return;
       }
-      // the source fell behind (clock drift, a stall, or it started talking again), re-anchor it
+      // the source fell behind (clock drift, a stall, or a new talk spurt)
       position = this.anchor(source, rtpTimestamp);
     } else if (this.position + this.bufferSamples < position + samples) {
-      // too far ahead to fit in the buffer (e.g. a big timestamp jump), re-anchor it
+      // too far ahead to fit in the buffer (e.g. a big timestamp jump)
       position = this.anchor(source, rtpTimestamp);
     }
 
@@ -250,14 +250,13 @@ export class AudioMixer extends EventSpewer {
     source.nextPosition = Math.max(source.nextPosition, position + samples);
 
     const channels = this.format.channels;
-    // skip whatever part of the frame was already emitted, and drop its newest samples if it doesn't fit in the buffer
-    // (writing past the end of the buffer would wrap around onto the slots that are about to be emitted)
+    // skip what was already emitted and drop what doesn't fit, so it can't wrap onto the slots about to be emitted
     const start = Math.max(this.position - position, 0);
     const end = Math.min(samples, this.position + this.bufferSamples - position);
     if (start < end) {
       const buffer = this.buffer;
       const values = pcmToInt16Array(pcm, end * channels);
-      // the range never covers more than the whole ring buffer, so it's at most two contiguous parts, the second one wrapping around to the start
+      // at most two contiguous parts, the second wrapping around to the start
       const length = (end - start) * channels;
       const index = ((position + start) % this.bufferSamples) * channels;
       const firstLength = Math.min(length, buffer.length - index);
@@ -325,7 +324,7 @@ export class AudioMixer extends EventSpewer {
     try {
       this.mix();
     } finally {
-      // keep going even if a listener threw, unless it stopped us (or restarted us, which already scheduled a tick)
+      // keep going even if a listener threw, unless it stopped or restarted us
       if (this.running && !this.timeout) {
         this.schedule();
       }
@@ -374,7 +373,7 @@ export class AudioMixer extends EventSpewer {
     const buffer = this.buffer;
     const samples = this.format.samplesPerFrame;
 
-    // a frame is at most two contiguous parts of the ring buffer, the second one wrapping around to the start
+    // at most two contiguous parts of the ring buffer, the second wrapping around to the start
     const length = samples * this.format.channels;
     const index = (this.position % this.bufferSamples) * this.format.channels;
     const firstLength = Math.min(length, buffer.length - index);
@@ -401,7 +400,7 @@ export class AudioMixer extends EventSpewer {
       return (this.skipSilence) ? null : Buffer.alloc(this.format.frameSize);
     }
 
-    // every sample gets written below, and `allocUnsafeSlow()` keeps the frame on its own ArrayBuffer like `alloc()` (not the shared pool)
+    // every sample gets written below, and `allocUnsafeSlow()` keeps it off the shared pool
     const frame = Buffer.allocUnsafeSlow(this.format.frameSize);
     const values = (IS_LITTLE_ENDIAN) ? new Int16Array(frame.buffer, frame.byteOffset, length) : new Int16Array(length);
     for (let i = 0; i < firstLength; i++) {

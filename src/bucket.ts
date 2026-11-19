@@ -2,6 +2,8 @@ import { Timers } from 'detritus-utils';
 
 
 export class Bucket {
+  // called for a queued item that gets cleared instead of run
+  readonly drops = new Map<Function, Function>();
   readonly resetTimeout = new Timers.Timeout();
   readonly timeout = new Timers.Timeout();
 
@@ -11,7 +13,7 @@ export class Bucket {
   priority: Array<Function>;
   queue: Array<Function>;
   reserved: number;
-  // ring of the last `limit` send times, `sentIndex` is the oldest one (and the next one to overwrite)
+  // ring of the last `limit` send times, `sentIndex` is the oldest one
   sent: Array<number>;
   sentIndex: number;
 
@@ -30,6 +32,7 @@ export class Bucket {
     this.sentIndex = 0;
 
     Object.defineProperties(this, {
+      drops: {enumerable: false},
       resetTimeout: {enumerable: false},
       timeout: {enumerable: false},
     });
@@ -38,7 +41,11 @@ export class Bucket {
   add(
     throttled: Function,
     unshift: boolean = false,
+    onDrop?: Function,
   ): void {
+    if (onDrop) {
+      this.drops.set(throttled, onDrop);
+    }
     if (unshift) {
       this.queue.unshift(throttled);
     } else {
@@ -48,18 +55,35 @@ export class Bucket {
   }
 
   // priority items go before the queue, ignore `locked`, and may use the `reserved` slots
-  addPriority(throttled: Function): void {
+  addPriority(throttled: Function, onDrop?: Function): void {
+    if (onDrop) {
+      this.drops.set(throttled, onDrop);
+    }
     this.priority.push(throttled);
     this.shift();
   }
 
   clear(): void {
+    const dropped = this.priority.concat(this.queue);
     this.priority.length = 0;
     this.queue.length = 0;
+    this.drop(dropped);
   }
 
   clearPriority(): void {
+    const dropped = this.priority.slice();
     this.priority.length = 0;
+    this.drop(dropped);
+  }
+
+  protected drop(dropped: Array<Function>): void {
+    for (let throttled of dropped) {
+      const onDrop = this.drops.get(throttled);
+      if (onDrop) {
+        this.drops.delete(throttled);
+        onDrop();
+      }
+    }
   }
 
   lock(unlockIn: number = 0): void {
@@ -73,7 +97,7 @@ export class Bucket {
     }
   }
 
-  // forgets the past sends, for when the limit starts over (like a new connection)
+  // for when the limit starts over, like a new connection
   reset(): void {
     this.resetTimeout.stop();
     this.sent.fill(0);
@@ -110,6 +134,8 @@ export class Bucket {
 
       const throttled = (isPriority) ? this.priority.shift() : this.queue.shift();
       if (throttled) {
+        // it runs now, if it queues itself again it passes its `onDrop` again
+        this.drops.delete(throttled);
         throttled();
       }
     }
